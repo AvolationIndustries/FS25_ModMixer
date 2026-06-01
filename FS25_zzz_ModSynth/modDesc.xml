@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<modDesc descVersion="105">
+    <author>Avolation Industries</author>
+    <version>1.1.0.0</version>
+    <title>
+        <en>ModSynth</en>
+        <de>ModSynth</de>
+    </title>
+    <description>
+        <en>
+Mods silently break each other. When two mods change the same game function, the one that loads last usually wins — and the other mod's work just vanishes, with no error, no crash, and no explanation. ModSynth finds these conflicts and tells you, in plain English, exactly what is fighting what and whether it actually matters.
+
+WHAT IT DOES
+- Scans every Lua hook across your whole mod stack at startup and writes a clear, severity-rated conflict report to modSynth.log (saved next to your game log).
+- Flags the conflicts that matter — broken overwrites that throw away another mod's work, load-order traps, and incompatible mods that replace the same system — and stays quiet about the harmless ones.
+- Warns you on screen when two genuinely incompatible mods are installed, so you know to remove one.
+- Where a fix is safe and provably correct, it repairs the hook chain automatically at runtime and silences known third-party log spam. Everything else is logged with a plain-English explanation so you decide.
+
+No configuration. No gameplay changes. Zero runtime cost after map load. Safe for multiplayer.
+
+NEW IN 1.1
+ModSynth now ships a built-in conflict database generated from a scan of hundreds of script mods. On top of its hand-verified catalogue, it detects conflicts generically — including brand-new mod combinations nobody has documented yet — and flags anything it does not recognise as "uncatalogued", so nothing slips through silently. The hand-verified catalogue grew to 57 entries.
+
+REQUIRES
+FS25_000_ModSynthHooks (downloaded automatically as a dependency).
+
+LINKS
+GitHub:  https://github.com/AvolationIndustries/FS25_ModSynth
+Discord: https://discord.gg/G2AvqwVJ
+
+By Avolation Industries.
+        </en>
+    </description>
+    <iconFilename>icon.dds</iconFilename>
+    <multiplayer supported="true"/>
+    <dependencies>
+        <dependency>FS25_000_ModSynthHooks</dependency>
+    </dependencies>
+    <extraSourceFiles>
+        <sourceFile filename="scripts/ms_catalogue_generated.lua"/>
+        <sourceFile filename="scripts/ModSynth.lua"/>
+    </extraSourceFiles>
+</modDesc>
