@@ -973,6 +973,11 @@ function SB.buildConflicts()
     if type(hooksByMod) == "table" then
         local hidden = (type(Utils.__ms_hiddenHooks) == "table") and Utils.__ms_hiddenHooks or {}
         local noVeto = (type(Utils.__ms_noVeto)      == "table") and Utils.__ms_noVeto      or {}
+        -- Prefer the interceptor's pattern-based load-critical test (catches constructors
+        -- and init/load hooks by name, not just the explicit list) so the UI locks exactly
+        -- what the veto path will refuse. Fall back to the raw table if unavailable.
+        local isLoadCritical = (type(Utils.__ms_isLoadCritical) == "function")
+            and Utils.__ms_isLoadCritical or function(t) return noVeto[t] == true end
 
         -- invert: target -> list of { mod, kind, seq }
         local byTarget = {}
@@ -994,7 +999,7 @@ function SB.buildConflicts()
                     mods[#mods + 1] = h.mod
                     if h.kind == "overwrite" and i >= 2 then stomp = true end   -- wraps inner mod(s)
                 end
-                local locked    = noVeto[target] == true
+                local locked    = isLoadCritical(target) == true
                 local hasHidden = hidden[target] == true
                 if hasHidden then stomp = true end   -- an unidentified overwrite may wrap
                 local res

@@ -145,14 +145,83 @@ local function _mmSafeMode(dir)
         or fileExists(dir .. "DISABLE_VETOES.txt")
 end
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- SAVE WATCHDOG (boot state) — load-time half. We persist a single PHASE across boots
+-- in boot_state.xml: "pending" (a lever boot started but never confirmed healthy),
+-- "ok" (confirmed healthy), or "recovered" (we auto-disabled levers after a pending).
+-- Reading "pending" at the next boot means the previous lever boot bricked/hung/crashed,
+-- so we auto-disable levers this boot to recover the player hands-free.
+--
+-- WHY a phase and not a delete-the-flag file: deleteFile is unreliable here — confirmed
+-- 2026-06-06 it silently no-op'd at BOTH early load AND runtime, which would have trapped
+-- the player in permanent safe mode. createXMLFile/saveXMLFile/getXMLString ARE proven
+-- (it's how switchboard.xml round-trips), so we only ever OVERWRITE the phase, never
+-- delete. WRITES happen at runtime (the listener); the READ happens here at early load.
+local _safeModeActive   = false   -- levers disabled this boot (manual kill switch OR auto-recovery)
+local _autoRecovered    = false   -- disabled specifically because the prior boot never confirmed
+local _safeModeResolved = false   -- resolve the decision + log it exactly once
+local _leversActive     = false   -- set once we know vetoes/reorders are actually being applied
+
+local function _statePath(dir) return dir .. "boot_state.xml" end
+
+local function _readPhase(dir)
+    if dir == nil or type(loadXMLFile) ~= "function" then return nil end
+    local p = _statePath(dir)
+    if type(fileExists) == "function" and not fileExists(p) then return nil end
+    local xml = loadXMLFile("MMBootRead", p)
+    if xml == nil or xml == 0 then return nil end
+    local phase = (type(getXMLString) == "function") and getXMLString(xml, "modmixerBoot#phase") or nil
+    if type(delete) == "function" then delete(xml) end
+    return phase
+end
+
+-- Overwrite the persisted phase. Runtime-only callers (createXMLFile is proven there).
+-- Returns true on a confirmed write so callers can log/verify.
+local function _writePhase(dir, phase)
+    if dir == nil or type(createXMLFile) ~= "function" then return false end
+    if type(createFolder) == "function" then pcall(createFolder, dir) end
+    local ok = false
+    pcall(function()
+        local x = createXMLFile("MMBootWrite", _statePath(dir), "modmixerBoot")
+        if x == nil or x == 0 then return end
+        if type(setXMLString) == "function" then
+            setXMLString(x, "modmixerBoot#phase", phase)
+            setXMLString(x, "modmixerBoot#ts",
+                (type(getDate) == "function" and getDate("%Y-%m-%d %H:%M:%S")) or "")
+        end
+        if type(saveXMLFile) == "function" then saveXMLFile(x) end
+        if type(delete) == "function" then delete(x) end
+        ok = true
+    end)
+    return ok
+end
+
+-- Decide ONCE whether load-time levers run this boot. Disable them for either reason:
+--   • manual kill switch (MODMIXER_SAFE_MODE.txt) — user-triggered recovery, or
+--   • watchdog auto-recovery — phase=="pending" left by a previous unconfirmed boot.
+local function _resolveSafeMode(dir)
+    if _safeModeResolved then return _safeModeActive end
+    _safeModeResolved = true
+    if _mmSafeMode(dir) then
+        _safeModeActive = true
+        log("SAFE MODE: kill-switch file present — all vetoes + reorders ignored this load.")
+    elseif _readPhase(dir) == "pending" then
+        _safeModeActive = true
+        _autoRecovered  = true
+        log("AUTO SAFE MODE: the previous boot applied ModMixer levers but never confirmed a")
+        log("  healthy load (brick / hang / crash). Levers are DISABLED this boot so you can")
+        log("  recover hands-free. Your config is untouched; the next boot returns to normal.")
+        log("  If it bricks again with levers on, one specific veto is at fault — check the")
+        log("  Switchboard for the contested target and lock or re-decide it.")
+    end
+    return _safeModeActive
+end
+
 local _vetoSet = {}
 local function readVetoes()
     if type(getUserProfileAppPath) ~= "function" or type(loadXMLFile) ~= "function" then return end
     local dir = getUserProfileAppPath() .. "modSettings/FS25_ModMixer/"
-    if _mmSafeMode(dir) then
-        log("SAFE MODE: kill-switch file present — all vetoes ignored this load.")
-        return
-    end
+    if _resolveSafeMode(dir) then return end
     local path = dir .. "switchboard.xml"
     if type(fileExists) == "function" and not fileExists(path) then return end
     local xml = loadXMLFile("ModMixerVetoRead", path)
@@ -185,10 +254,7 @@ local _reorderOrder = {}
 local function readReorders()
     if type(getUserProfileAppPath) ~= "function" or type(loadXMLFile) ~= "function" then return end
     local dir = getUserProfileAppPath() .. "modSettings/FS25_ModMixer/"
-    if _mmSafeMode(dir) then
-        log("SAFE MODE: kill-switch file present — all reorders ignored this load.")
-        return
-    end
+    if _resolveSafeMode(dir) then return end
     local path = dir .. "switchboard.xml"
     if type(fileExists) == "function" and not fileExists(path) then return end
     local xml = loadXMLFile("ModMixerReorderRead", path)
@@ -242,8 +308,45 @@ local NO_VETO = {
     ["DensityMapHeightManager.loadMapData"] = true,
     ["VehicleMaterial.apply"] = true,
     ["VehicleMaterial.applyToVehicle"] = true,
+    -- Constructors of core, persisted save-state objects. Vetoing one mod's hook
+    -- here HALF-INITIALISES the object: the mod's OTHER hooks still run and read
+    -- fields the constructor never created -> the savegame's farm/economy load
+    -- throws and aborts, leaving 0 money + no owned vehicles (no Tab control).
+    -- Confirmed brick 2026-06-06: vetoing FS25_SeasonalTires -> Farm.new. NEVER vetoable.
+    ["Farm.new"] = true,
 }
 Utils.__ms_noVeto = NO_VETO
+
+-- Beyond the explicit list above, protect the whole CLASS of load-critical hooks by
+-- name pattern. Vetoing a constructor or init/load hook half-initialises a mod -> its
+-- other hooks read state that was never created -> the save bricks. We refuse vetoes
+-- on these by pattern so we stop finding them one brick at a time (Farm.new was the
+-- last one found the hard way). OVER-protecting is safe: the worst case is a veto the
+-- user wanted is logged as "VETO IGNORED", never a brick. UNDER-protecting loses saves.
+local LOAD_CRITICAL_PATTERNS = {
+    "%.new$",                          -- constructors: Farm.new, Vehicle.new, ...
+    "%.load$",                         -- X:load(...)
+    "%.loadFromXMLFile$",
+    "%.onLoad$", "%.onPreLoad$", "%.onPostLoad$",
+    "%.loadMapData$",
+    "%.onFinalizePlacement$",
+    "%.onConnectionFinishedLoading$",
+    "%.sendInitialClientState$",
+}
+local _lcCache = {}
+local function isLoadCritical(target)
+    if target == nil then return false end
+    if NO_VETO[target] then return true end
+    local cached = _lcCache[target]
+    if cached ~= nil then return cached end
+    local hit = false
+    for _, pat in ipairs(LOAD_CRITICAL_PATTERNS) do
+        if string.find(target, pat) ~= nil then hit = true; break end
+    end
+    _lcCache[target] = hit
+    return hit
+end
+Utils.__ms_isLoadCritical = isLoadCritical
 
 -- Attribute a hook to its mod. IN-GAME `debug` IS UNAVAILABLE (confirmed by the probe
 -- above: type(debug)=nil — GIANTS strips it outside a -cheats/dev launch), so source-
@@ -458,7 +561,7 @@ local function patched(orig, existingFn, newFn, kind)
     end
 
     if target ~= nil and isVetoed(mod, target) then
-        if NO_VETO[target] then
+        if isLoadCritical(target) then
             log(string.format("VETO IGNORED: %s -> %s is load-critical (installed anyway).",
                 tostring(mod), target))
         else
@@ -470,7 +573,7 @@ local function patched(orig, existingFn, newFn, kind)
 
     -- REORDER path: buffer the hook and return the trampoline (load-critical
     -- targets are never reordered — they fall through to normal install).
-    if target ~= nil and isReordered(target) and not NO_VETO[target] then
+    if target ~= nil and isReordered(target) and not isLoadCritical(target) then
         local buf = Utils.__ms_reorderBuf[target]
         if buf == nil then
             buf = { base = existingFn, hooks = {} }   -- first hooker: existingFn is pristine
@@ -513,6 +616,12 @@ do
         log("RECOVERY: if the game loads with no input/control, create an empty file named")
         log("  MODMIXER_SAFE_MODE.txt  in  modSettings/FS25_ModMixer/  then restart.")
         log("  It disables ALL vetoes + reorders for that load WITHOUT losing your config.")
+        -- WATCHDOG arm: this boot is applying levers. The listener writes phase="pending"
+        -- at runtime (loadMap) and flips it to "ok" once the farm loads healthy. If we never
+        -- get there (brick/hang/crash) it stays "pending" and the NEXT boot auto-recovers.
+        if not _safeModeActive then
+            _leversActive = true
+        end
     end
 end
 
@@ -665,4 +774,123 @@ if Mission00 ~= nil and type(Mission00.loadMission00Finished) == "function" and 
         local ok, err = pcall(coverageLog)
         if not ok then log("coverageLog error (non-fatal): " .. tostring(err)) end
     end)
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- SAVE GUARD — runtime half of the watchdog. ONLY armed when this boot actually
+-- applied levers (so a vanilla / safe-mode load is never touched). Once the mission
+-- is fully started we confirm the local player is on a real farm. If so → write phase
+-- "ok" (this boot is proven healthy). If NOT (the brick signature: spectator / no farm)
+-- → leave phase "pending" (next boot auto-recovers) AND block saves this session so an
+-- autosave can't overwrite the good on-disk save with the broken state.
+-- ─────────────────────────────────────────────────────────────────────────────
+local MMSaveGuard = { started = false, checked = false, grace = 0, wrapped = false, blockOn = false }
+
+-- True only when the local player is genuinely assigned to a real (non-spectator) farm.
+local function _farmHealthy()
+    local mc = g_currentMission
+    if mc == nil or type(mc.getFarmId) ~= "function" then return false end
+    local farmId = mc:getFarmId()
+    if farmId == nil or farmId == 0 then return false end
+    if FarmManager ~= nil and farmId == FarmManager.SPECTATOR_FARM_ID then return false end
+    if g_farmManager ~= nil and type(g_farmManager.getFarmById) == "function"
+        and g_farmManager:getFarmById(farmId) == nil then return false end
+    return true
+end
+
+-- Wrap g_currentMission:saveSavegame at the instance level so EVERY save path (auto +
+-- manual) routes through us. We only refuse while blockOn is set (a confirmed bad load).
+local function _installSaveBlock()
+    if MMSaveGuard.wrapped then return end
+    local mc = g_currentMission
+    if mc == nil or type(mc.saveSavegame) ~= "function" then return end
+    local orig = mc.saveSavegame
+    mc.saveSavegame = function(self, ...)
+        if MMSaveGuard.blockOn then
+            log("SAVE BLOCKED: this session loaded with no valid farm (likely a veto/conflict "
+                .. "brick). Refusing to save so your on-disk savegame stays intact. Quit WITHOUT "
+                .. "saving and restart — ModMixer auto-disables levers on the next boot.")
+            if type(self.showBlinkingWarning) == "function" then
+                pcall(self.showBlinkingWarning, self,
+                    "ModMixer: abnormal load (no farm) - SAVE BLOCKED to protect your savegame. "
+                    .. "Restart to recover.", 8000)
+            end
+            return
+        end
+        return orig(self, ...)
+    end
+    MMSaveGuard.wrapped = true
+end
+
+-- Reset per mission load — a new mission gets a fresh g_currentMission + farm.
+function MMSaveGuard:loadMap(name)
+    -- Persist this boot's phase at runtime (createXMLFile is reliable here, unlike deleteFile).
+    -- Auto-recovery boot -> "recovered" (clears the prior "pending" so the NEXT boot is normal).
+    -- A normal lever boot -> "pending" until the health check below flips it to "ok". Manual
+    -- safe-mode boots touch nothing.
+    local dir = (type(getUserProfileAppPath) == "function")
+        and (getUserProfileAppPath() .. "modSettings/FS25_ModMixer/") or nil
+    if dir ~= nil then
+        if _autoRecovered then
+            local ok = _writePhase(dir, "recovered")
+            log("watchdog: phase -> recovered (auto-recovery boot) " .. (ok and "[written]" or "[WRITE FAILED]"))
+        elseif _leversActive and not _safeModeActive then
+            local ok = _writePhase(dir, "pending")
+            log("watchdog: phase -> pending (lever boot armed) " .. (ok and "[written]" or "[WRITE FAILED]"))
+        end
+    end
+    MMSaveGuard.started = false
+    MMSaveGuard.checked = false
+    MMSaveGuard.grace   = 0
+    MMSaveGuard.wrapped = false
+    MMSaveGuard.blockOn = false
+end
+
+function MMSaveGuard:update(dt)
+    if _safeModeActive or not _leversActive then return end   -- nothing we did could brick this boot
+    if g_currentMission == nil then return end
+    if not MMSaveGuard.wrapped then pcall(_installSaveBlock) end
+    if MMSaveGuard.checked or not MMSaveGuard.started then return end
+    -- single-player only: in MP the save is server-authoritative and a joining client's
+    -- farm assignment can legitimately lag — never risk a false positive there.
+    if g_currentMission.missionDynamicInfo ~= nil
+        and g_currentMission.missionDynamicInfo.isMultiplayer == true then
+        MMSaveGuard.checked = true
+        return
+    end
+    MMSaveGuard.grace = MMSaveGuard.grace + (dt or 0)
+    if MMSaveGuard.grace < 1500 then return end   -- let farm assignment settle after start
+    MMSaveGuard.checked = true
+    local dir = (type(getUserProfileAppPath) == "function")
+        and (getUserProfileAppPath() .. "modSettings/FS25_ModMixer/") or nil
+    if _farmHealthy() then
+        local ok = _writePhase(dir, "ok")
+        log("BOOT CONFIRMED HEALTHY: farm loaded with levers on — watchdog phase -> ok "
+            .. (ok and "[written]." or "[WRITE FAILED — tell the dev]."))
+    else
+        MMSaveGuard.blockOn = true
+        log("ABNORMAL LOAD: no valid farm after the mission started (spectator/none) — the brick "
+            .. "signature. Keeping the watchdog sentinel (next boot auto-disables levers) and "
+            .. "BLOCKING saves this session to protect your savegame.")
+        local mc = g_currentMission
+        if type(mc.showBlinkingWarning) == "function" then
+            pcall(mc.showBlinkingWarning, mc,
+                "ModMixer: this load looks broken (no farm). Saves are BLOCKED to protect your "
+                .. "savegame. Quit without saving and restart to recover.", 12000)
+        end
+    end
+end
+
+-- "Mission fully started" is the only safe moment to judge farm health: it fires AFTER
+-- all loading completes, so it can't false-positive on a long load (yours stream vehicles
+-- for minutes). On a hang the mission never starts -> we never clear -> next boot recovers.
+if Mission00 ~= nil and type(Mission00.onStartMission) == "function" and _orig_append then
+    Mission00.onStartMission = _orig_append(Mission00.onStartMission, function(...)
+        MMSaveGuard.started = true
+        MMSaveGuard.grace   = 0
+    end)
+end
+
+if type(addModEventListener) == "function" then
+    addModEventListener(MMSaveGuard)
 end
