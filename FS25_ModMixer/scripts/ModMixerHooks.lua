@@ -133,7 +133,10 @@ end
 
 -- Never park ourselves: the watchdog / save-guard listener must keep ticking.
 local HIBERNATE_SKIP = { ["FS25_0_ModMixer"] = true, ["FS25_ModMixer"] = true }
-local GATED_METHODS  = { "update", "draw", "mouseEvent", "keyEvent" }
+-- Gate ONLY per-frame work (update/draw). Input (mouseEvent/keyEvent) is left LIVE: gating
+-- it strands a parked mod's own menu/hotkeys → locked controls (RealisticShopping, 2026-06-08).
+-- Input handlers fire only on actual input, not per-frame, so leaving them live costs nothing.
+local GATED_METHODS  = { "update", "draw" }
 
 -- Accrue elapsed time for a timed method. Multi-return-safe: orig's results pass through
 -- untouched, and an error inside orig propagates exactly as it would un-wrapped (we never
@@ -241,6 +244,7 @@ if _now ~= nil and type(getUserProfileAppPath) == "function" and type(fileExists
 end
 Utils.__ms_hookProbe = Utils.__ms_hookProbe or { on = _hookProbeArmed }
 Utils.__ms_hookCost  = Utils.__ms_hookCost  or {}
+Utils.__ms_hookArmed = _hookProbeArmed   -- UI reads this (Performance tier) to know if hook/spec cost is live
 local _hp       = Utils.__ms_hookProbe
 local _hookCost = Utils.__ms_hookCost
 if _hookProbeArmed then

@@ -630,7 +630,7 @@ local function doLoad()
     -- migrate the older two-mode value ("basic" → "seating")
     if loadedMode == "basic" then loadedMode = "seating" end
     if loadedMode == "seating" or loadedMode == "category" or loadedMode == "advanced"
-       or loadedMode == "review" then
+       or loadedMode == "review" or loadedMode == "performance" then
         SB.mode = loadedMode
     end
     SB.priorityGlobal = loadedPriority
@@ -981,12 +981,33 @@ function SB.toggleHibernate(modName)
     return SB.isHibernated(modName)
 end
 
+-- Recovery: wake every parked mod live (and clear the persisted set). If a park ever locks
+-- you up, this (or MODMIXER_SAFE_MODE.txt + restart) gets you out.
+function SB.consoleWakeAll(_)
+    local n = 0
+    if type(Utils) == "table" and type(Utils.__ms_hibernate) == "table" then
+        for m in pairs(Utils.__ms_hibernate) do Utils.__ms_hibernate[m] = nil; n = n + 1 end
+    end
+    SB.hibernated = {}
+    SB.save()
+    return string.format("ModMixer: woke all parked mod(s) (%d) and cleared the saved set.", n)
+end
+
 -- Push persisted parks into the live gate table (call after SB.load, once the mods
 -- are fully initialised). We never park DURING load — mods init normally first, then
 -- get parked here, so a saved park can't half-initialise anything.
 function SB.applyHibernate()
     if type(Utils) ~= "table" then return end
     Utils.__ms_hibernate = Utils.__ms_hibernate or {}
+    -- Recovery hatch: the safe-mode kill switch ALSO un-parks this boot (a persisted park can
+    -- soft-lock if you open the parked mod's GUI). Config is kept; next normal boot re-applies.
+    if type(getUserProfileAppPath) == "function" and type(fileExists) == "function" then
+        local dir = getUserProfileAppPath() .. "modSettings/FS25_ModMixer/"
+        if fileExists(dir .. "MODMIXER_SAFE_MODE.txt") or fileExists(dir .. "DISABLE_VETOES.txt") then
+            gamelog("SAFE MODE: parks NOT applied this boot (recovery) — config kept.")
+            return
+        end
+    end
     local n = 0
     for modName, on in pairs(SB.hibernated) do
         Utils.__ms_hibernate[modName] = on and true or nil
@@ -1077,19 +1098,59 @@ function SB.consoleCost(_)
         table.concat(parts, "\n"), reclaimable, saved)
 end
 
-function SB.consoleCostReset(_)
-    if type(Utils) == "table" and type(Utils.__ms_cost) == "table" then
-        for _, c in pairs(Utils.__ms_cost) do
-            c.upd = 0; c.drw = 0; c.frames = 0; c.maxMs = 0; c.spikes = 0
-        end
+-- Zero every cost/frame/hook/spec accumulator (start a fresh measurement window). Shared
+-- by mmCostReset and the Performance tier (reset on entry so the numbers are "since you
+-- opened it", not polluted by load-time spikes).
+function SB.resetCostWindow()
+    if type(Utils) ~= "table" then return end
+    if type(Utils.__ms_cost) == "table" then
+        for _, c in pairs(Utils.__ms_cost) do c.upd = 0; c.drw = 0; c.frames = 0; c.maxMs = 0; c.spikes = 0 end
     end
-    if type(Utils) == "table" and type(Utils.__ms_frame) == "table" then
+    if type(Utils.__ms_frame) == "table" then
         Utils.__ms_frame.acc = 0; Utils.__ms_frame.n = 0; Utils.__ms_frame.maxMs = 0
     end
-    if type(Utils) == "table" and type(Utils.__ms_hookCost) == "table" then
+    if type(Utils.__ms_hookCost) == "table" then
         for _, c in pairs(Utils.__ms_hookCost) do c.t = 0; c.n = 0; c.maxMs = 0; c.spikes = 0; c.frameT = 0 end
     end
+end
+
+function SB.consoleCostReset(_)
+    SB.resetCostWindow()
     return "ModMixer: all cost/frame/hook/spec accumulators reset. Play ~30s, then mmLoad / mmCost / mmPeaks."
+end
+
+-- Data for the Performance tier: frame summary + per-mod/per-spec cost (avg ms/frame over
+-- the window), sorted heaviest first. Same math as mmLoad. probeArmed = hook/spec timing
+-- is installed (file-armed); when false only listener cost is measured.
+function SB.buildPerformanceRows()
+    local out = { mods = {}, frameMs = 0, fps = 0, frames = 0, totalMs = 0, budgetPct = 0,
+                  probeArmed = (type(Utils) == "table" and Utils.__ms_hookArmed == true) }
+    if type(Utils) ~= "table" or type(Utils.__ms_frame) ~= "table" then return out end
+    local frames = Utils.__ms_frame.n or 0
+    out.frames = frames
+    if frames < 1 then return out end
+    out.frameMs = (Utils.__ms_frame.acc or 0) / frames   -- dt is already ms (per-mod cost is in s → ×1000)
+    out.fps = (out.frameMs > 0) and (1000 / out.frameMs) or 0
+    local perMod = {}
+    if type(Utils.__ms_cost) == "table" then
+        for mod, c in pairs(Utils.__ms_cost) do
+            local ms = ((c.upd or 0) + (c.drw or 0)) / frames * 1000
+            if ms > 0.001 then perMod[mod] = (perMod[mod] or 0) + ms end
+        end
+    end
+    if type(Utils.__ms_hookCost) == "table" then
+        for _, c in pairs(Utils.__ms_hookCost) do
+            local ms = (c.t or 0) / frames * 1000
+            if ms > 0.001 then perMod[c.mod] = (perMod[c.mod] or 0) + ms end
+        end
+    end
+    local rows, total = {}, 0
+    for mod, ms in pairs(perMod) do rows[#rows + 1] = { mod = mod, ms = ms }; total = total + ms end
+    table.sort(rows, function(a, b) return a.ms > b.ms end)
+    out.mods = rows
+    out.totalMs = total
+    out.budgetPct = total / (1000 / 60) * 100
+    return out
 end
 
 -- mmLoad: "the number that matters." Total per-frame mod SCRIPT cost vs the 60fps budget, so
@@ -1106,7 +1167,7 @@ function SB.consoleLoad(_)
     if frames < 30 then
         return string.format("ModMixer: only %d frames sampled. Run mmCostReset, play ~30s, then mmLoad.", frames)
     end
-    local frameAvg = (fr.acc or 0) / frames * 1000
+    local frameAvg = (fr.acc or 0) / frames   -- dt already in ms (per-mod cost is in s → ×1000)
     local perMod, listenerMs, hookMs = {}, 0, 0
     if type(Utils.__ms_cost) == "table" then
         for mod, c in pairs(Utils.__ms_cost) do
@@ -1282,6 +1343,8 @@ if addConsoleCommand ~= nil and not SB._consoleRegistered then
         "consoleHibernate", SB)
     addConsoleCommand("mmHibernateList", "List mods that can be hibernated (parked) live",
         "consoleHibernateList", SB)
+    addConsoleCommand("mmWakeAll", "Wake every parked mod (recovery if a park locks you up)",
+        "consoleWakeAll", SB)
     addConsoleCommand("mmCost", "Show per-mod main-loop CPU cost (ms/frame), heaviest first",
         "consoleCost", SB)
     addConsoleCommand("mmCostReset", "Zero the per-mod cost accumulators for a fresh measurement",
@@ -1302,9 +1365,11 @@ end
 -- TIERED RESOLUTION API  (Seating / Category / Advanced)
 -- ─────────────────────────────────────────────────────────────────────────────
 
-local MODE_CYCLE = { seating = "category", category = "advanced", advanced = "review", review = "seating" }
+local MODE_CYCLE = { seating = "category", category = "advanced", advanced = "review",
+                    review = "performance", performance = "seating" }
 function SB.setMode(m)
-    if m ~= "seating" and m ~= "category" and m ~= "advanced" and m ~= "review" then m = "seating" end
+    if m ~= "seating" and m ~= "category" and m ~= "advanced" and m ~= "review"
+       and m ~= "performance" then m = "seating" end
     SB.mode = m
     SB.save()
 end

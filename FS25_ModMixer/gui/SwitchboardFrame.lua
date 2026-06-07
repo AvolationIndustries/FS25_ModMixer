@@ -347,6 +347,19 @@ local function helpForRow(row)
             .. "rows before reading them. Brings them all back instantly."
     elseif rt == "reviewInfo" then
         return row.featureLabel or ""
+    elseif rt == "perfMod" then
+        local s = "COST \226\128\148 this mod's measured per-frame script cost (ms/frame), this window.\n"
+        if row.perfParkable then
+            s = s .. "Park (Space) gates its per-frame work LIVE; press again to wake. \226\154\160 Don't park a mod "
+                  .. "you're actively using \226\128\148 opening its own menu while parked can lock controls. Recover with "
+                  .. "mmWakeAll (console) or MODMIXER_SAFE_MODE.txt + restart."
+        else
+            s = s .. "Not parkable \226\128\148 it runs via a vehicle spec or addUpdateable, not a listener. The cost "
+                  .. "shows for awareness; reduce it by removing/replacing the mod, or vetoing a hook in Advanced."
+        end
+        return s
+    elseif rt == "perfInfo" then
+        return row.featureLabel or DEFAULT_HELP
     end
     return DEFAULT_HELP
 end
@@ -357,6 +370,7 @@ local TIER_LEGEND = {
     category = "BY CATEGORY \226\128\148 settle one realm at a time. Change winner picks a fight; Promote/Move ranks within the realm; shared stacks all run.",
     advanced = "ADVANCED \226\128\148 #/# = firing position; [ow] overwrites (wraps inner); [ow!] may STOMP inner mods. Move reorders (restart). Make-Winner mutes others (restart).",
     review   = "REVIEW \226\128\148 things worth a look: duplicate-purpose mods, incompatible pairs, HUD overlaps. Select a row for the evidence; Dismiss (Space) hides ones you've judged.",
+    performance = "PERFORMANCE \226\128\148 live per-mod cost (ms/frame) vs your 60fps budget. Heaviest first. Park (Space) gates a mod's per-frame work to reclaim it. Resets its window when you open the tab.",
 }
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -408,8 +422,8 @@ function ModMixerSwitchboardFrame:updateChrome()
     end
     if self.tierSwitch ~= nil then
         local idx = (mode == "seating" and 1) or (mode == "category" and 2)
-                 or (mode == "advanced" and 3) or 4
-        pcall(function() self.tierSwitch:setTexts({ "Simple", "By category", "Advanced", "Review" }) end)
+                 or (mode == "advanced" and 3) or (mode == "review" and 4) or 5
+        pcall(function() self.tierSwitch:setTexts({ "Simple", "By category", "Advanced", "Review", "Performance" }) end)
         pcall(function() self.tierSwitch:setState(idx, false) end)
     end
 end
@@ -419,9 +433,14 @@ function ModMixerSwitchboardFrame:onTierSwitchChanged(state)
     local s = state
     if type(s) ~= "number" and self.tierSwitch ~= nil then s = self.tierSwitch:getState() end
     local mode = (s == 1 and "seating") or (s == 2 and "category")
-              or (s == 3 and "advanced") or "review"
+              or (s == 3 and "advanced") or (s == 4 and "review") or "performance"
     if ModMixerSwitchboard ~= nil and ModMixerSwitchboard.setMode ~= nil then
         ModMixerSwitchboard.setMode(mode)
+    end
+    -- Fresh measurement window when entering Performance, so the numbers are "since you
+    -- opened the tab" rather than polluted by load-time spikes.
+    if mode == "performance" and ModMixerSwitchboard ~= nil and ModMixerSwitchboard.resetCostWindow ~= nil then
+        pcall(ModMixerSwitchboard.resetCostWindow)
     end
     self:rebuildFilterCats()
     self:refresh()
@@ -551,6 +570,18 @@ function ModMixerSwitchboardFrame:getMenuButtonInfo()
     end
     if row ~= nil and row.rowType == "reviewInfo" then
         return { self.btnBack }   -- info only
+    end
+
+    -- Performance tier: Park/Wake on a parkable mod row; the rest are read-only.
+    if row ~= nil and row.rowType == "perfMod" then
+        if row.perfParkable then
+            self.btnActivate.text = row.perfParked and "Wake" or "Park"
+            return { self.btnBack, self.btnActivate }
+        end
+        return { self.btnBack }
+    end
+    if row ~= nil and row.rowType == "perfInfo" then
+        return { self.btnBack }
     end
 
     if row == nil or row.rowType == "header" or row.rowType == "vehicleState" then
@@ -1170,8 +1201,8 @@ function ModMixerSwitchboardFrame:rebuildFilterCats()
     -- Basic mode pages by the same switcher, over its own categories (King Pins +
     -- fight categories + Incompatible).
     local sbMode = ModMixerSwitchboard ~= nil and ModMixerSwitchboard.mode or "advanced"
-    -- Tier 1 (Seating) & Tier 4 (Review): single page, no category pager.
-    if sbMode == "seating" or sbMode == "review" then
+    -- Tier 1 (Seating), Tier 4 (Review) & Tier 5 (Performance): single page, no pager.
+    if sbMode == "seating" or sbMode == "review" or sbMode == "performance" then
         self.filterCats = {}
         if self.categoryFilter ~= nil then pcall(function() self.categoryFilter:setVisible(false) end) end
         return
@@ -1330,10 +1361,89 @@ function ModMixerSwitchboardFrame:collectReviewRows()
     return rows
 end
 
+-- ─── TIER 5 (Performance): live per-mod cost vs the frame budget ───────────────
+-- Summary (frame ms/fps + total mod load vs the 60fps budget) then the heaviest mods,
+-- each with a cost bar and a live Park toggle (Space) for the parkable ones. The window
+-- resets on entry; update() live-refreshes it ~1×/sec.
+local function perfBar(v, vmax)
+    local ratio = (vmax > 0) and (v / vmax) or 0
+    ratio = math.max(0, math.min(1, ratio))
+    local width = 12
+    local pos   = math.floor(ratio * width + 0.5)
+    return "[" .. string.rep("=", pos) .. string.rep(".", width - pos) .. "]"
+end
+
+function ModMixerSwitchboardFrame:collectPerformanceRows()
+    local SB = ModMixerSwitchboard
+    local rows = {}
+    if SB == nil or SB.buildPerformanceRows == nil then
+        basicHeader(rows, "Performance")
+        rows[#rows + 1] = { rowType = "perfInfo", category = "Performance",
+            modLabel = "(performance data unavailable)", featureLabel = "", stateText = "" }
+        return rows
+    end
+    local p = SB.buildPerformanceRows()
+    basicHeader(rows, "Performance")
+    if p.frames < 30 then
+        rows[#rows + 1] = { rowType = "perfInfo", category = "Performance", modLabel = "Sampling\226\128\166",
+            featureLabel = "measuring \226\128\148 play for a few seconds", stateText = p.frames .. " frames" }
+        return rows
+    end
+    rows[#rows + 1] = { rowType = "perfInfo", category = "Performance", modLabel = "Frame",
+        featureLabel = string.format("%.1f ms/frame", p.frameMs),
+        stateText = string.format("~%.0f fps   (%d frames)", p.fps, p.frames) }
+    local sev = (p.budgetPct >= 100 and "\226\154\160 OVER budget") or (p.budgetPct >= 75 and "getting high") or "ok"
+    rows[#rows + 1] = { rowType = "perfInfo", category = "Performance", modLabel = "Mod load",
+        featureLabel = string.format("%.1f ms/f  of 16.7ms (60fps) budget", p.totalMs),
+        stateText = string.format("%.0f%%  \226\128\148  %s", p.budgetPct, sev) }
+    if not p.probeArmed then
+        rows[#rows + 1] = { rowType = "perfInfo", category = "Performance", modLabel = "Hook/spec probe OFF",
+            featureLabel = "listener cost only \226\128\148 drop MODMIXER_HOOKPROBE.txt in modSettings/FS25_ModMixer/ + restart for full per-mod/spec cost",
+            stateText = "" }
+    end
+    if #p.mods == 0 then
+        rows[#rows + 1] = { rowType = "perfInfo", category = "Performance",
+            modLabel = "(no measurable mod cost)", featureLabel = "nothing is over ~0.001 ms/frame this window", stateText = "" }
+        return rows
+    end
+    basicHeader(rows, "Heaviest mods (ms/frame)")
+    local maxMs, shown = p.mods[1].ms, 0
+    for _, e in ipairs(p.mods) do
+        if shown >= 25 then break end
+        shown = shown + 1
+        local parkable = SB.isHibernatable ~= nil and SB.isHibernatable(e.mod)
+        local parked   = SB.isHibernated   ~= nil and SB.isHibernated(e.mod)
+        local state = parked and "PARKED" or (parkable and "PARK" or "\226\128\148")
+        rows[#rows + 1] = {
+            rowType = "perfMod", category = "Performance",
+            modName = e.mod, modLabel = prettyMod(e.mod),
+            featureLabel = string.format("%.2f ms/f  %s", e.ms, perfBar(e.ms, maxMs)),
+            stateText = state, perfParkable = parkable, perfParked = parked,
+        }
+    end
+    return rows
+end
+
+-- Live-refresh the Performance tier, preserving the selected MOD (rows re-sort by cost
+-- each tick, so an index-based reselect would drift to a different mod).
+function ModMixerSwitchboardFrame:refreshPerfLive()
+    local sel    = self:getSelectedRow()
+    local selMod = sel and sel.modName or nil
+    self:refresh()
+    if selMod ~= nil and self.featureList ~= nil then
+        for i, r in ipairs(self.rowSource.rows) do
+            if r.rowType == "perfMod" and r.modName == selMod then
+                pcall(function() self.featureList:setSelectedIndex(i) end); break
+            end
+        end
+    end
+end
+
 function ModMixerSwitchboardFrame:buildRows()
     local sbMode = ModMixerSwitchboard ~= nil and ModMixerSwitchboard.mode or "advanced"
 
     if sbMode == "review" then return self:collectReviewRows() end
+    if sbMode == "performance" then return self:collectPerformanceRows() end
 
     -- Tiers 1 & 2 (Seating / Category) share the same sort + header machinery; they only
     -- differ in which collector feeds them and whether the category pager filters.
@@ -1492,6 +1602,15 @@ end
 function ModMixerSwitchboardFrame:update(dt)
     local sc = ModMixerSwitchboardFrame:superClass()
     if sc ~= nil and sc.update ~= nil then pcall(sc.update, self, dt) end
+    -- Performance tier: live-refresh the cost numbers ~1x/sec (selection preserved by mod).
+    if ModMixerSwitchboard ~= nil and ModMixerSwitchboard.mode == "performance" then
+        local now = g_time or 0
+        if self._lastPerf == nil or (now - self._lastPerf) >= 1000 then
+            self._lastPerf = now
+            pcall(function() self:refreshPerfLive() end)
+        end
+        return
+    end
     if not SHOW_VEHICLE_STATE then return end
     -- The vehicle panel only exists in Advanced; don't live-refresh in the other tiers.
     if ModMixerSwitchboard ~= nil and ModMixerSwitchboard.mode ~= "advanced" then return end
@@ -1506,6 +1625,10 @@ end
 function ModMixerSwitchboardFrame:onFrameOpen()
     if self.categoryHeaderText ~= nil then
         self.categoryHeaderText:setText("ModMixer - Switchboard")
+    end
+    if ModMixerSwitchboard ~= nil and ModMixerSwitchboard.mode == "performance"
+       and ModMixerSwitchboard.resetCostWindow ~= nil then
+        pcall(ModMixerSwitchboard.resetCostWindow)   -- fresh window if we open into Performance
     end
     self:rebuildFilterCats()
     self:refresh()
@@ -1640,6 +1763,16 @@ function ModMixerSwitchboardFrame:onActivate()
         return
     end
     if row.rowType == "reviewInfo" then return end
+    -- Performance tier: Space parks/wakes a parkable mod LIVE.
+    if row.rowType == "perfMod" then
+        if row.perfParkable and SB.toggleHibernate ~= nil then
+            SB.toggleHibernate(row.modName)
+            self:refreshPerfLive()
+            self:setMenuButtonInfoDirty()
+        end
+        return
+    end
+    if row.rowType == "perfInfo" then return end
     if row.rowType == "basicFight" then self:cycleFightWinner(row); return end
     if row.rowType == "basicPriority" or row.rowType == "catPriority" then
         self:onMoveHook(-1); return   -- SPACE = promote
