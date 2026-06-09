@@ -35,20 +35,34 @@
 
         <!-- Category pager (Tier 2 only): page with the menu's prev/next or the arrows. -->
         <MultiTextOption profile="ModMixer_categoryFilter" id="categoryFilter"
-                         position="20px -104px" size="520px 34px" onClick="onFilterChanged"/>
+                         position="20px -120px" size="520px 34px" onClick="onFilterChanged"/>
 
         <!-- Feature help box — lifted up into the empty top-right band (right of the title,
              above the tab row; +Y = up in this frame). Clear of the title (ends ~610px) and the
              tabs (end ~578px). Updated on row selection. -->
         <Text profile="ModMixer_helpBox" id="featureHelp" text=""
-              position="690px 66px" size="820px 168px"/>
+              position="690px 66px" size="820px 215px"/>
 
-        <Text profile="ModMixer_colHeader" text="MOD"     position="20px -150px"   size="500px 24px"/>
-        <Text profile="ModMixer_colHeader" text="FEATURE" position="530px -150px"  size="440px 24px"/>
-        <Text profile="ModMixer_colHeader" text="STATE"   position="1000px -150px" size="300px 24px"/>
-        <ThreePartBitmap profile="fs25_lineSeparatorTopHighlighted" position="0px -178px"/>
+        <!-- Tier legend / description — sits between the category filter and the column headers,
+             with breathing room above and below. Text is set per-tier from Lua. -->
+        <Text profile="ModMixer_headerInfo" id="headerInfo" text=""
+              position="20px -168px" size="1480px 36px"/>
 
-        <SmoothList id="featureList" profile="ModMixer_table" position="20px -186px" size="1480px 540px">
+        <!-- MOD + FEATURE headers are clickable in the Performance tier to sort the per-mod cost
+             list (by name / by cost). Stock sort-arrow bitmaps are revealed on the active column
+             by updateChrome and hidden in every other tier. STATE stays a plain label. -->
+        <Button profile="ModMixer_colHeaderBtn" id="colMod" text="MOD" position="20px -216px" size="500px 24px" onClick="onSortByName">
+            <Bitmap profile="fs25_vehiclesHeaderIconSortAscending"  id="sortModAsc"  position="58px 0px"/>
+            <Bitmap profile="fs25_vehiclesHeaderIconSortDescending" id="sortModDesc" position="58px 0px"/>
+        </Button>
+        <Button profile="ModMixer_colHeaderBtn" id="colFeat" text="FEATURE" position="530px -216px" size="440px 24px" onClick="onSortByCost">
+            <Bitmap profile="fs25_vehiclesHeaderIconSortAscending"  id="sortFeatAsc"  position="98px 0px"/>
+            <Bitmap profile="fs25_vehiclesHeaderIconSortDescending" id="sortFeatDesc" position="98px 0px"/>
+        </Button>
+        <Text profile="ModMixer_colHeader" text="STATE"   position="1000px -216px" size="300px 24px"/>
+        <ThreePartBitmap profile="fs25_lineSeparatorTopHighlighted" position="0px -244px"/>
+
+        <SmoothList id="featureList" profile="ModMixer_table" position="20px -252px" size="1480px 474px">
             <ListItem profile="ModMixer_listItem">
                 <Text profile="ModMixer_cellLeft"  position="20px 0px"   size="500px 40px" name="mod"/>
                 <Text profile="ModMixer_cellLeft"  position="530px 0px"  size="440px 40px" name="feature"/>
@@ -65,13 +79,9 @@
             </ListItem>
         </SmoothList>
 
-        <ThreePartBitmap profile="ModMixer_sliderBox" position="1500px -186px" size="6px 540px">
+        <ThreePartBitmap profile="ModMixer_sliderBox" position="1500px -252px" size="6px 474px">
             <Slider profile="fs25_listSlider" dataElementId="featureList"/>
         </ThreePartBitmap>
-
-        <!-- Legend — moved to the bottom; its text is set per-tier from Lua. -->
-        <Text profile="ModMixer_headerInfo" id="headerInfo" text=""
-              position="20px -732px" size="1480px 40px"/>
 
     </GuiElement>
 </GUI>

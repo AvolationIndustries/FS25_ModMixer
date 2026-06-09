@@ -1167,8 +1167,24 @@ function SB.specContributors(specName, frames)
     return { timed = timedList, untimed = untimed }
 end
 
+-- Performance-tier sort state (driven by the clickable MOD / FEATURE column headers, TSSC-
+-- style). key = "cost"|"name"; dir = "asc"|"desc". Default = heaviest first.
+SB.perfSort = SB.perfSort or { key = "cost", dir = "desc" }
+
+-- Click a sortable header: the same column flips direction; a new column adopts its natural
+-- default (cost = heaviest first, name = A->Z).
+function SB.setPerfSort(key)
+    local ps = SB.perfSort
+    if ps.key == key then
+        ps.dir = (ps.dir == "desc") and "asc" or "desc"
+    else
+        ps.key = key
+        ps.dir = (key == "name") and "asc" or "desc"
+    end
+end
+
 -- Data for the Performance tier: frame summary + per-mod/per-spec cost (avg ms/frame over
--- the window), sorted heaviest first. Same math as mmLoad. probeArmed = hook/spec timing
+-- the window), sorted per SB.perfSort. Same math as mmLoad. probeArmed = hook/spec timing
 -- is installed (file-armed); when false only listener cost is measured.
 function SB.buildPerformanceRows()
     local out = { mods = {}, frameMs = 0, fps = 0, frames = 0, totalMs = 0, budgetPct = 0,
@@ -1207,7 +1223,19 @@ function SB.buildPerformanceRows()
     end
     local rows, total = {}, 0
     for name, e in pairs(perMod) do rows[#rows + 1] = { mod = name, ms = e.ms, isSpec = e.isSpec }; total = total + e.ms end
-    table.sort(rows, function(a, b) return a.ms > b.ms end)
+    local ps = SB.perfSort or { key = "cost", dir = "desc" }
+    table.sort(rows, function(a, b)
+        if ps.key == "name" then
+            local an, bn = (a.mod or ""):lower(), (b.mod or ""):lower()
+            if an == bn then return (a.ms or 0) > (b.ms or 0) end
+            if ps.dir == "asc" then return an < bn end
+            return an > bn
+        end
+        local am, bm = a.ms or 0, b.ms or 0
+        if am == bm then return (a.mod or "") < (b.mod or "") end
+        if ps.dir == "asc" then return am < bm end
+        return am > bm
+    end)
     out.mods = rows
     out.totalMs = total
     out.budgetPct = total / (1000 / 60) * 100
@@ -1625,23 +1653,55 @@ function SB.buildReviewItems()
             }
         end
     end
-    -- 3) HUD / visual overlaps — sourced OFFLINE from the bundled hookmap, NOT live
-    --    attribution. Two+ installed mods that both draw the same HUD element collide
-    --    visually even though the chain technically runs both (e.g. a vanished weather
-    --    panel). The interceptor can't name HUD-class hooks at runtime (the class loads
-    --    after our snapshot), so the offline hookmap is the reliable source here.
+    -- 3) HUD / visual overlaps. PRIMARY source = the LIVE interceptor (Utils.__ms_hooksByMod):
+    --    it names + attributes HUD-class hooks just-in-time (the class exists the moment a mod
+    --    hooks it), so this is current AND installed-only by construction -- new HUD mods appear
+    --    with no patch, and removed mods can't ghost. The bundled hookmap is merged in only as a
+    --    fallback for stubborn late classes (e.g. GameInfoDisplay) the live pass can miss.
+    local HUD_CLASS = { GameInfoDisplay = true, HUD = true, PlayerHUDUpdater = true }
+    local function hudNorm(m)
+        local s = tostring(m):lower()
+        s = (s:gsub("%.zip$", ""))
+        s = (s:gsub("^fs25_%d+_", ""))   -- load-order prefix (FS25_0_, FS25_12_, ...)
+        s = (s:gsub("^fs25_", ""))
+        return s
+    end
+    local hudByTarget = {}   -- [target] = { [normName] = displayName }  (de-duped, installed-only)
+    local function addHud(target, mod)
+        if type(target) ~= "string" or mod == nil then return end
+        local cls = string.match(target, "^([^.]+)%.")
+        if cls == nil or not HUD_CLASS[cls] then return end
+        if not present(mod) then return end                       -- currently-installed only
+        local bucket = hudByTarget[target]
+        if bucket == nil then bucket = {}; hudByTarget[target] = bucket end
+        bucket[hudNorm(mod)] = mod
+    end
+    -- LIVE: every HUD-class hook the interceptor named this session (self-updating, ghost-free).
+    if type(Utils) == "table" and type(Utils.__ms_hooksByMod) == "table" then
+        for mod, targets in pairs(Utils.__ms_hooksByMod) do
+            if mod ~= "(unknown)" and mod ~= "(anonymous)" and type(targets) == "table" then
+                for target in pairs(targets) do addHud(target, mod) end
+            end
+        end
+    end
+    -- BUNDLED: fallback for late classes the live pass misses (installed-filtered + de-duped).
     local hookmap = safeGlobal("ModMixerHookMap")
     if type(hookmap) == "table" then
-        local HUD_CLASS = { GameInfoDisplay = true, HUD = true, PlayerHUDUpdater = true }
         for target, mods in pairs(hookmap) do
-            local cls = string.match(target, "^([^.]+)%.")
-            if cls ~= nil and HUD_CLASS[cls] and type(mods) == "table" and #mods >= 2 then
-                local key = "hud|" .. target
-                items[#items + 1] = {
-                    rkind = "hud", key = key, dismissed = SB.reviewDismissed[key] == true,
-                    target = target, mods = mods,
-                }
+            if type(mods) == "table" then
+                for _, m in ipairs(mods) do addHud(target, m) end
             end
+        end
+    end
+    for target, bucket in pairs(hudByTarget) do
+        local mods = {}
+        for _, displayName in pairs(bucket) do mods[#mods + 1] = displayName end
+        if #mods >= 2 then
+            local key = "hud|" .. target
+            items[#items + 1] = {
+                rkind = "hud", key = key, dismissed = SB.reviewDismissed[key] == true,
+                target = target, mods = mods,
+            }
         end
     end
     -- 4) Orphaned settings: modSettings/ left behind by uninstalled mods (runtime scan).

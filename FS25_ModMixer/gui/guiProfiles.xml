@@ -33,6 +33,20 @@
         <textColor value="$preset_colorWhite_50" />
     </Profile>
 
+    <!-- Clickable column header (Performance-tier sort). Transparent button background
+         (imageColor alpha 0) so it reads as a header, not a box; same text as ModMixer_colHeader,
+         tinted green on hover/focus. The TSSC recipe. -->
+    <Profile name="ModMixer_colHeaderBtn" extends="baseReference" with="anchorTopLeft">
+        <imageColor value="0 0 0 0" />
+        <textSize value="15px" />
+        <textBold value="true" />
+        <textUpperCase value="true" />
+        <textAlignment value="left" />
+        <textColor value="$preset_colorWhite_50" />
+        <textHighlightedColor value="$preset_fs25_colorMainHighlight" />
+        <textFocusedColor value="$preset_fs25_colorMainHighlight" />
+    </Profile>
+
     <Profile name="ModMixer_headerInfo" extends="fs25_statisticsHeaderText" with="anchorTopLeft">
         <textMaxNumLines value="2"/>
         <textVerticalAlignment value="top"/>
@@ -41,7 +55,7 @@
     <!-- Feature help box (top-right): plain-English explanation of the selected row.
          Multi-line, top-aligned, a touch brighter than the bottom legend. -->
     <Profile name="ModMixer_helpBox" extends="fs25_statisticsHeaderText" with="anchorTopLeft">
-        <textMaxNumLines value="5"/>
+        <textMaxNumLines value="8"/>
         <textVerticalAlignment value="top"/>
         <textSize value="13px"/>
         <textColor value="$preset_fs25_colorMainLight"/>

@@ -388,7 +388,7 @@ local TIER_LEGEND = {
     category = "BY CATEGORY \226\128\148 settle one realm at a time. Change winner picks a fight; Promote/Move ranks within the realm; shared stacks all run.",
     advanced = "ADVANCED \226\128\148 #/# = firing position; [ow] wraps inner (safe); \226\154\160 [ow!] = positioned to override the mods below it (potential stomp). Move reorders, Make-Winner mutes \226\128\148 both restart.",
     review   = "REVIEW \226\128\148 things worth a look: duplicate-purpose mods, incompatible pairs, HUD overlaps. Select a row for the evidence; Dismiss (Space) hides ones you've judged.",
-    performance = "PERFORMANCE \226\128\148 live per-mod cost (ms/frame) vs your 60fps budget. Heaviest first. Park (Space) gates a mod's per-frame work to reclaim it. Resets its window when you open the tab.",
+    performance = "PERFORMANCE \226\128\148 live per-mod cost (ms/frame) vs your 60fps budget. Click MOD or FEATURE to sort. Park (Space) gates a mod's per-frame work to reclaim it. Window resets when you open the tab.",
 }
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -443,6 +443,12 @@ function ModMixerSwitchboardFrame:onGuiSetupFinished()
             end
         end
     end
+    -- Performance sort arrows start hidden; updateChrome reveals the active one in that tier.
+    -- (numeric loop, not ipairs — a nil id would otherwise truncate the table early)
+    local arrows = { self.sortModAsc, self.sortModDesc, self.sortFeatAsc, self.sortFeatDesc }
+    for i = 1, 4 do
+        if arrows[i] ~= nil then pcall(function() arrows[i]:setVisible(false) end) end
+    end
 end
 
 -- Help box (top-right): explain the selected row in plain English.
@@ -465,6 +471,15 @@ function ModMixerSwitchboardFrame:updateChrome()
         pcall(function() self.tierSwitch:setTexts({ "Simple", "By category", "Advanced", "Review", "Performance" }) end)
         pcall(function() self.tierSwitch:setState(idx, false) end)
     end
+    -- Performance sort arrows: reveal the asc/desc glyph on the active sort column, and only in
+    -- the Performance tier (MOD/FEATURE headers are shared, so they're inert elsewhere).
+    local perf = (mode == "performance")
+    local ps = (ModMixerSwitchboard ~= nil and ModMixerSwitchboard.perfSort) or { key = "cost", dir = "desc" }
+    local function setVis(el, v) if el ~= nil then pcall(function() el:setVisible(v == true) end) end end
+    setVis(self.sortModAsc,   perf and ps.key == "name" and ps.dir == "asc")
+    setVis(self.sortModDesc,  perf and ps.key == "name" and ps.dir == "desc")
+    setVis(self.sortFeatAsc,  perf and ps.key == "cost" and ps.dir == "asc")
+    setVis(self.sortFeatDesc, perf and ps.key == "cost" and ps.dir == "desc")
 end
 
 -- VIEW switch clicked (Simple / By category / Advanced) — set the tier and rebuild.
@@ -508,6 +523,17 @@ function ModMixerSwitchboardFrame:onTab2() self:switchTier("category")    end
 function ModMixerSwitchboardFrame:onTab3() self:switchTier("advanced")    end
 function ModMixerSwitchboardFrame:onTab4() self:switchTier("review")      end
 function ModMixerSwitchboardFrame:onTab5() self:switchTier("performance") end
+
+-- Sortable Performance headers (TSSC-style): MOD = by name, FEATURE = by cost. Only acts in
+-- the Performance tier (the headers are shared across tiers); repeat clicks flip direction.
+function ModMixerSwitchboardFrame:onSortByName() self:applyPerfSort("name") end
+function ModMixerSwitchboardFrame:onSortByCost() self:applyPerfSort("cost") end
+function ModMixerSwitchboardFrame:applyPerfSort(key)
+    if ModMixerSwitchboard == nil or ModMixerSwitchboard.mode ~= "performance" then return end
+    if ModMixerSwitchboard.setPerfSort ~= nil then ModMixerSwitchboard.setPerfSort(key) end
+    self:refresh()
+    self:updateChrome()
+end
 
 function ModMixerSwitchboardFrame:initialize()
     ModMixerSwitchboardFrame:superClass().initialize(self)
@@ -1473,7 +1499,11 @@ function ModMixerSwitchboardFrame:collectPerformanceRows()
             modLabel = "(no measurable mod cost)", featureLabel = "nothing is over ~0.001 ms/frame this window", stateText = "" }
         return rows
     end
-    local maxMs = p.mods[1].ms
+    -- Real max for bar scaling — p.mods[1] is only the heaviest under cost-desc; other sorts
+    -- (name, or cost-asc) would otherwise scale every bar off the wrong reference.
+    local maxMs = 0
+    for _, e in ipairs(p.mods) do if (e.ms or 0) > maxMs then maxMs = e.ms end end
+    if maxMs <= 0 then maxMs = 1 end
     local modList, sysList = {}, {}
     for _, e in ipairs(p.mods) do
         if e.isSpec then sysList[#sysList + 1] = e else modList[#modList + 1] = e end
@@ -1519,7 +1549,7 @@ function ModMixerSwitchboardFrame:collectPerformanceRows()
         emit(modList, 20)
     end
     if #sysList > 0 then
-        basicHeader(rows, "Game systems \226\128\148 shared specs (base + mods that modify them)")
+        basicHeader(rows, "Game systems \226\128\148 shared specs (base + mods)")
         emit(sysList, 15)
     end
     return rows
