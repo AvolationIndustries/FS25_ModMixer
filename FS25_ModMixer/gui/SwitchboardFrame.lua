@@ -7,6 +7,10 @@
 -- unpack is global in FS25's Lua 5.1; table.unpack in newer Lua (e.g. lupa tests).
 local unpack = unpack or table.unpack
 
+-- Mod dir captured at source-time (g_currentModDirectory is valid while the file
+-- loads); used to swap the stock tractor header badge for our faders glyph.
+local MOD_DIR = g_currentModDirectory
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- VALUE SLIDER TEXTS  (must be above RowSource — populateCellForItemInSection
 -- references valueTextsFor, and Lua locals aren't hoisted)
@@ -1888,6 +1892,11 @@ end
 function ModMixerSwitchboardFrame:onFrameOpen()
     if self.categoryHeaderText ~= nil then
         self.categoryHeaderText:setText("ModMixer - Switchboard")
+    end
+    -- Swap the stock tractor header badge for our faders glyph (once per session).
+    if self.categoryHeaderIcon ~= nil and not self._hdrIconSet and MOD_DIR ~= nil then
+        pcall(function() self.categoryHeaderIcon:setImageFilename(Utils.getFilename("gui/headerIcon.dds", MOD_DIR)) end)
+        self._hdrIconSet = true
     end
     if ModMixerSwitchboard ~= nil and ModMixerSwitchboard.mode == "performance"
        and ModMixerSwitchboard.resetCostWindow ~= nil then

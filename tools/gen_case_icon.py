@@ -116,6 +116,15 @@ def draw_glyph_mono(d):
     trk(191,88,223,64,5); dot(191,88,7)
     ring(164,196,17,4); trk(164,196,154,185,4); ring(218,196,17,4); trk(218,196,228,185,4)
 
+def draw_header(d):
+    # Header-badge glyph: four mixing FADERS (the verticals cropped from the menu
+    # glyph). White on transparent → shows white on the green header badge.
+    WH=(255,255,255,255)
+    for x in (52,104,156,208): cap(d,P(x,38),P(x,218),W(6),WH)
+    for (cx,cy) in [(52,82),(104,152),(156,104),(208,174)]:
+        d.rounded_rectangle([(cx-15)*SS,(cy-9)*SS,(cx+15)*SS,(cy+9)*SS],radius=4*SS,fill=WH)
+        cap(d,P(cx-9,cy),P(cx+9,cy),W(3),DARK)
+
 case_T = T(1.05, -6.35, -6.9)
 
 img,d=new(); draw_shell(d); draw_modules(d,case_T); case=img.resize((512,512),Image.LANCZOS)
@@ -127,6 +136,9 @@ def write_dds(path,im):
 
 write_dds(os.path.join(SRC,"icon_ModMixer.dds"),case)
 write_dds(os.path.join(GUI,"menuIcon.dds"),glyph)
+imgh,dh=new(); draw_header(dh); header=imgh.resize((256,256),Image.LANCZOS)
+write_dds(os.path.join(GUI,"headerIcon.dds"),header)
+bh=Image.new("RGBA",(256,256),(141,198,63,255)); bh.alpha_composite(header); bh.convert("RGB").resize((200,200)).save(os.path.join(PROJECT,"_header_preview.png"))
 # previews: UNSELECTED (white glyph on dark menu) + SELECTED (engine tints it dark on FS green)
 def show(sel,size):
     a=np.array(glyph.resize((size,size),Image.LANCZOS))

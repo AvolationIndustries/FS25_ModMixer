@@ -4,6 +4,7 @@ _icon_*
 _case_*
 _glyph_*
 _verify_*
+_header_*
 *.log
 _scan_results.json
 
