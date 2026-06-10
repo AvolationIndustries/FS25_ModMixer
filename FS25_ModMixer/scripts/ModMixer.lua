@@ -878,71 +878,51 @@ end
 -- ─────────────────────────────────────────────────────────────────────────────
 -- IN-GAME ON-SCREEN WARNING (incompatible mods only)
 --
--- We render our own text with renderText() instead of showBlinkingWarning, which
--- is a single centered banner that truncates multi-line text and collides with
--- other mods' notifications. Drawing it ourselves gives full control of position
--- (top-left, clear of the centered info box), colour (bright red), and lets us
--- show every incompatible group on its own line.
+-- v1.3: native SIDE NOTIFICATIONS — the stacked feed under the clock, the same
+-- channel the game's own policy/contract notices use. We previously rendered our
+-- own red text at the top-left, but that corner belongs to the F1 help overlay
+-- (which is WHY no mod draws there): with help open the two layers overprinted
+-- into mush. The feed stacks with everything, fades itself, and can't overlap.
+-- One notice per incompatible group + a pointer to Switchboard > Review, where
+-- the pairs are listed permanently with evidence (plus ModMixer.log).
 --
--- Timing: deferred until the player is actually in-world (no GUI / loading screen
--- up). Once shown it stays for HOLD_MS, then fades out over FADE_MS.
+-- Timing: deferred until the player is actually in-world (no GUI / loading
+-- screen up), then fired ONCE — no per-frame draw hook anymore.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 if #incompatibleWarnings > 0 then
-    local warnLines = { "ModMixer: incompatible mods detected" }
-    for _, w in ipairs(incompatibleWarnings) do
-        table.insert(warnLines, "  - " .. w.mods)
-    end
-    table.insert(warnLines, "Remove all but one from each group (see ModMixer.log)")
+    local START_DELAY = 2500     -- ms in-world before firing
+    local SHOW_MS     = 15000    -- how long each notice stays in the feed
+    local RED         = { 0.95, 0.12, 0.12, 1 }
 
-    local START_DELAY = 2500     -- ms in-world before showing
-    local HOLD_MS     = 20000    -- ms fully visible
-    local FADE_MS     = 2000     -- ms fade-out
-    local X           = 0.012    -- top-left, normalized screen coords
-    local Y_TOP       = 0.95     -- just under the very top of the screen
-    local LINE_H      = 0.026
-    local SIZE        = 0.020
-
-    local inWorld = 0
-    local shownAt = nil          -- accumulated ms since display started
+    local inWorld, fired = 0, false
     FSBaseMission.update = Utils.appendedFunction(FSBaseMission.update,
         function(self, dt)
+            if fired then return end
             if g_gui ~= nil and g_gui.currentGui ~= nil then return end
             inWorld = inWorld + dt
             if inWorld < START_DELAY then return end
-            if shownAt == nil then shownAt = 0 end
-            shownAt = shownAt + dt
-        end)
-
-    FSBaseMission.draw = Utils.appendedFunction(FSBaseMission.draw,
-        function(self)
-            -- Never paint over an open menu/GUI (Switchboard, ESC menu, dialogs).
-            -- Without this the in-world warning bled on top of the menu header and
-            -- collided with the logo/title — the "bunching" artefact.
-            if g_gui ~= nil and g_gui.currentGui ~= nil then return end
-            if shownAt == nil then return end
-            if shownAt > (HOLD_MS + FADE_MS) then return end
-
-            local alpha = 1.0
-            if shownAt > HOLD_MS then
-                alpha = 1.0 - ((shownAt - HOLD_MS) / FADE_MS)
+            fired = true
+            local hud = (g_currentMission ~= nil) and g_currentMission.hud or nil
+            if hud ~= nil and hud.addSideNotification ~= nil then
+                for _, w in ipairs(incompatibleWarnings) do
+                    pcall(function()
+                        hud:addSideNotification(RED,
+                            "ModMixer: incompatible - " .. w.mods .. " (keep one)", SHOW_MS)
+                    end)
+                end
+                pcall(function()
+                    hud:addSideNotification(RED,
+                        "ModMixer: details in Switchboard > Review (or ModMixer.log)", SHOW_MS)
+                end)
+            else
+                -- Feed unavailable (API moved?) — last-ditch single banner; the full
+                -- list is always in Switchboard > Review and ModMixer.log anyway.
+                pcall(function()
+                    g_currentMission:showBlinkingWarning(
+                        "ModMixer: incompatible mods installed - see Switchboard > Review", 8000)
+                end)
             end
-            if alpha <= 0 then return end
-
-            setTextBold(true)
-            setTextAlignment(RenderText.ALIGN_LEFT)
-            local y = Y_TOP
-            for _, line in ipairs(warnLines) do
-                -- shadow for legibility against bright sky
-                setTextColor(0, 0, 0, alpha)
-                renderText(X + 0.0015, y - 0.0015, SIZE, line)
-                -- bright red foreground
-                setTextColor(1, 0.10, 0.10, alpha)
-                renderText(X, y, SIZE, line)
-                y = y - LINE_H
-            end
-            setTextBold(false)
-            setTextColor(1, 1, 1, 1)
         end)
 end
 
