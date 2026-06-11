@@ -174,24 +174,24 @@ SB.registry = {
             -- range is [0.5, 1.0] (reduce below default) unless the cap is patched.
             { id = "mud_frictionModifier",       label = "Mud Tire Friction",        kind = "value",
               min = 0.5, max = 1.5, step = 0.1, default = 1.0,
-              hint = "Only vehicles ACTUALLY ON mud tires (Vehicle tab shows the type; ST defaults everything to All-Season). Range 0.5\226\128\1471.0 (caps above 1.0). \226\154\160 Can't hold while DynamicDrivePro's per-tick grip writer runs \226\128\148 see DDP's row." },
+              hint = "\226\154\160 ST PORT BUG: in FS25 the friction function this feeds is (almost) never called \226\128\148 the value lands but the code never runs, so this slider is INERT. ST's tire-wear/type system is unaffected." },
             { id = "allSeason_frictionModifier", label = "All-Season Tire Friction", kind = "value",
               min = 0.5, max = 1.5, step = 0.1, default = 1.0,
-              hint = "Vehicles on ALL-SEASON tires \226\128\148 ST's DEFAULT type, so this is the knob most machines feel. Range 0.5\226\128\1471.0 (caps above 1.0). \226\154\160 Can't hold while DynamicDrivePro's per-tick grip writer runs \226\128\148 see DDP's row." },
+              hint = "\226\154\160 ST PORT BUG: in FS25 the friction function this feeds is (almost) never called \226\128\148 the value lands but the code never runs, so this slider is INERT. ST's tire-wear/type system is unaffected." },
             { id = "snow_frictionModifier",      label = "Snow Tire Friction",       kind = "value",
               min = 0.5, max = 1.5, step = 0.1, default = 1.0,
-              hint = "Vehicles on SNOW tires, felt under load. Values above 1.0 are capped by the mod \226\128\148 use 0.5\226\128\1471.0." },
+              hint = "\226\154\160 ST PORT BUG: feeds a friction function FS25 (almost) never calls \226\128\148 INERT slider; wear/type system unaffected." },
             { id = "road_frictionModifier",      label = "Road Tire Friction",       kind = "value",
               min = 0.5, max = 1.5, step = 0.1, default = 1.0,
-              hint = "Vehicles on ROAD tires, felt under load. Values above 1.0 are capped by the mod \226\128\148 use 0.5\226\128\1471.0." },
+              hint = "\226\154\160 ST PORT BUG: feeds a friction function FS25 (almost) never calls \226\128\148 INERT slider; wear/type system unaffected." },
             -- rainBonus is added to baseFriction in rain (negative = penalty, 0 = neutral).
             -- mud default = 0 (no rain effect); allSeason/snow/road default = -0.1 (rain penalty).
             { id = "mud_rainBonus",       label = "Mud Tire Rain Bonus",      kind = "value",
               min = -0.3, max = 0.3, step = 0.05, default = 0.0,
-              hint = "Only acts WHILE IT'S RAINING, on mud tires." },
+              hint = "\226\154\160 ST PORT BUG: rain-only knob feeding the same never-called friction path \226\128\148 INERT in FS25." },
             { id = "allSeason_rainBonus", label = "All-Season Rain Bonus",    kind = "value",
               min = -0.3, max = 0.1, step = 0.05, default = -0.1,
-              hint = "Only acts WHILE IT'S RAINING, on all-season tires." },
+              hint = "\226\154\160 ST PORT BUG: rain-only knob feeding the same never-called friction path \226\128\148 INERT in FS25." },
         },
         apply = function(featureId, value)
             local TM = modGlobal("FS25_SeasonalTires", "TireManager")
