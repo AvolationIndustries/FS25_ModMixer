@@ -1965,6 +1965,15 @@ if Mission00 ~= nil and type(Mission00.loadMission00Finished) == "function"
         Mission00.loadMission00Finished,
         function()
             SB.load()
+            -- Capture each overridden feature's PRE-OVERRIDE value (the mod's own boot
+            -- default — its loadMission00Finished ran before ours) BEFORE applyAll stomps
+            -- it. Without this, "reset" could only restore values captured mid-session,
+            -- i.e. your PREVIOUS SETTING, never the mod's actual default (Avo's report).
+            for modName, feats in pairs(SB.overrides) do
+                for featureId in pairs(feats) do
+                    pcall(SB.captureOriginal, modName, featureId)
+                end
+            end
             SB.applyAll()
             SB.applyHibernate()   -- re-park any mods saved as hibernated (LIVE, after init)
         end)
