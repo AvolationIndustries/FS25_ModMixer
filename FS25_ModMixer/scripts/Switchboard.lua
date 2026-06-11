@@ -174,7 +174,7 @@ SB.registry = {
             -- range is [0.5, 1.0] (reduce below default) unless the cap is patched.
             { id = "mud_frictionModifier",       label = "Mud Tire Friction",        kind = "value",
               min = 0.5, max = 1.5, step = 0.1, default = 1.0,
-              hint = "Vehicles on MUD tires, felt under load. NOTE: the mod caps values above 1.0 (no effect) \226\128\148 working range is 0.5\226\128\1471.0." },
+              hint = "Vehicles on MUD tires, felt under load. The mod caps values above 1.0 (no effect) \226\128\148 working range 0.5\226\128\1471.0. In mud, MudSystemPhysics' grip model dominates while ON (its toggle is in this tab)." },
             { id = "allSeason_frictionModifier", label = "All-Season Tire Friction", kind = "value",
               min = 0.5, max = 1.5, step = 0.1, default = 1.0,
               hint = "Vehicles on ALL-SEASON tires, felt under load. Values above 1.0 are capped by the mod \226\128\148 use 0.5\226\128\1471.0." },
@@ -267,7 +267,7 @@ SB.registry = {
         features = {
             { id = "RollingResistanceScale", label = "Rolling Resistance", kind = "value",
               min = 0.5, max = 4.0, step = 0.5, default = 2.0,
-              hint = "Extra rolling drag on SOFT ground (fields) \226\128\148 minimal on roads." },
+              hint = "Extra rolling drag on SOFT ground (fields) \226\128\148 minimal on roads; in deep mud MudSystemPhysics' own drag dominates while ON (its toggle is in this tab)." },
             { id = "HelperPhysicsFactor",    label = "Helper Physics",     kind = "value",
               min = 0.5, max = 2.0, step = 0.1, default = 1.0,
               hint = "AI HELPER vehicles only." },
@@ -377,6 +377,39 @@ SB.registry = {
         read = function(featureId)
             local R = modGlobal("FS25_REA_by_Papa_Matze_v1_0_4", "REAimplements")
             if R ~= nil then return R[featureId] end
+            return nil
+        end,
+    },
+
+    -- MudSystemPhysics (BMP): full mud overhaul that OVERWRITES the tire-friction
+    -- pipeline (WheelPhysics.serverUpdate / updateTireFriction / updatePhysics) and
+    -- applies its own grip multiplier to physics each tick (temp-set frictionScale →
+    -- engine applies → restore). While enabled, ITS model dominates what grip mods
+    -- underneath (SeasonalTires, REAwheels…) can express in mud. Both engines expose
+    -- a per-tick-checked master flag (set once at load, read everywhere, disable path
+    -- actively cleans up) → safe LIVE kill-toggles. This is the compat-coaching lever:
+    -- flip OFF to hand the grip pipeline back, no restart.
+    ["FS25_MudSystemPhysics"] = {
+        label  = "MudSystemPhysics",
+        author = "BMP",
+        features = {
+            { id = "fieldGroundEnabled", label = "Field Mud Physics (grip/sink)", kind = "toggle",
+              hint = "MSP's field mud engine \226\128\148 while ON, its grip model dominates in mud and tire-grip sliders (SeasonalTires, REAwheels) barely register there. Flip OFF live to hand grip back to them." },
+            { id = "mudPhysicsEnabled",  label = "Mud Physics (second engine)",   kind = "toggle",
+              hint = "MSP's second mud engine \226\128\148 same story: flip OFF live to feel other grip mods in mud." },
+        },
+        apply = function(featureId, value)
+            local map = { fieldGroundEnabled = "FieldGroundMudPhysics", mudPhysicsEnabled = "MudPhysics" }
+            local g = map[featureId]
+            local T = (g ~= nil) and modGlobal("FS25_MudSystemPhysics", g) or nil
+            if T ~= nil then T.enabled = value; return true, g .. ".enabled" end
+            return false, tostring(g) .. " not found"
+        end,
+        read = function(featureId)
+            local map = { fieldGroundEnabled = "FieldGroundMudPhysics", mudPhysicsEnabled = "MudPhysics" }
+            local g = map[featureId]
+            local T = (g ~= nil) and modGlobal("FS25_MudSystemPhysics", g) or nil
+            if T ~= nil then return T.enabled end
             return nil
         end,
     },

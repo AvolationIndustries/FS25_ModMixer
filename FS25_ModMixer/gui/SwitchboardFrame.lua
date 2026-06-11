@@ -1148,7 +1148,22 @@ function ModMixerSwitchboardFrame:collectRows()
                 elseif vetoed then stateText = "VETOED (restart)"
                 elseif isWinner then stateText = "WINNER (restart)"
                 elseif hasCustomOrder and consecutive then
-                    stateText = string.format("reordered %d/%d%s", dispIdx, nHook, kindTag)
+                    -- PENDING-AWARE: SB.reorders holds the DESIRED firing order; the live
+                    -- chain doesn't change until restart. Without the arrow + (restart),
+                    -- Move looked like a dead button (row kept its live position, nothing
+                    -- re-sorted, no tag — unlike VETOED/WINNER which always say restart).
+                    local wantIdx = nil
+                    local want = SB.getHookOrder ~= nil and SB.getHookOrder(target) or nil
+                    if type(want) == "table" then
+                        for wi, wm in ipairs(want) do if wm == modName then wantIdx = wi break end end
+                    end
+                    if wantIdx ~= nil and orderIdx ~= nil and wantIdx ~= orderIdx then
+                        local wantDisp = (nHook or 1) - wantIdx + 1
+                        stateText = string.format("reordered %d/%d \226\134\146 %d/%d (restart)%s",
+                            dispIdx, nHook, wantDisp, nHook, kindTag)
+                    else
+                        stateText = string.format("reordered %d/%d%s", dispIdx, nHook, kindTag)
+                    end
                 elseif consecutive then
                     stateText = string.format("%d/%d%s", dispIdx, nHook, kindTag)
                 else
