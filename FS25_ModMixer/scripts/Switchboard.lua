@@ -1985,6 +1985,27 @@ if Mission00 ~= nil and type(Mission00.loadMission00Finished) == "function"
             end
             SB.applyAll()
             SB.applyHibernate()   -- re-park any mods saved as hibernated (LIVE, after init)
+            -- LATE RE-ASSERT: some mods load their OWN saved settings in their own
+            -- loadMission00Finished append — which runs AFTER ours, because WE load
+            -- first (0_ prefix) so our append installed first. FarmKit does exactly
+            -- this (NXFarmKitSettings.load at its line 361) and flipped its wheel
+            -- physics back ON every boot. (The old "our callback runs last" comment
+            -- was true in the zzz_ two-mod era; the single-mod merge inverted it.)
+            -- Re-apply overrides ONCE at the first settled in-world tick — after
+            -- every mod's load-time settings reader has had its say.
+            if FSBaseMission ~= nil and type(FSBaseMission.update) == "function" then
+                local reasserted, settled = false, 0
+                FSBaseMission.update = Utils.appendedFunction(FSBaseMission.update,
+                    function(_, dt)
+                        if reasserted then return end
+                        if g_gui ~= nil and g_gui.currentGui ~= nil then return end
+                        settled = settled + (dt or 0)
+                        if settled < 2000 then return end
+                        reasserted = true
+                        SB.applyAll()
+                        gamelog("late re-assert: overrides re-applied after all mods' settings loads")
+                    end)
+            end
         end)
     gamelog("armed — config loads + overrides apply at map load")
 else
