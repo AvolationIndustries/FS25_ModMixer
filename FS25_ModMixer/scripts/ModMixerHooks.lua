@@ -342,10 +342,14 @@ end
 -- shows in mmHookCost / the spike log as "<specName> -> spec:onUpdate". Attribution: the spec's
 -- registered name via g_specializationManager (best), else the loading mod, else a stable id.
 -- Dedupe by fn (a spec fn is shared across vehicle types). Multi-return-safe, never pcalls fn.
-if _hookProbeArmed and type(SpecializationUtil) == "table"
+if (_hookProbeArmed or _attribArmed) and type(SpecializationUtil) == "table"
    and type(SpecializationUtil.registerEventListener) == "function" then
     local _specWrapped = {}
     local _SPEC_EVENTS = { onUpdate = true, onUpdateTick = true }
+    -- Lifecycle events where mods PLANT hooks (attribution marker; never the per-frame
+    -- ones — installs don't happen there and the hot path stays untouched).
+    local _SPEC_MARK = { onLoad = true, onPreLoad = true, onPostLoad = true,
+                         onLoadFinished = true, onDelete = true, onRegisterActionEvents = true }
     local _specSeq = 0
 
     local function _specLabel(specTable)
@@ -379,23 +383,47 @@ if _hookProbeArmed and type(SpecializationUtil) == "table"
 
     local _orig_regEL = SpecializationUtil.registerEventListener
     SpecializationUtil.registerEventListener = function(vehicleType, eventName, specTable)
-        if _SPEC_EVENTS[eventName] and type(specTable) == "table" then
+        if type(specTable) == "table" then
             local fn = specTable[eventName]
             if type(fn) == "function" and not _specWrapped[fn] then
-                local label = _specLabel(specTable)
-                if not HIBERNATE_SKIP[label] then
-                    _specWrapped[fn] = true
-                    local wrapped = _wrapHookTiming(label, "spec:" .. eventName, fn)
-                    _specWrapped[wrapped] = true   -- don't re-wrap if a later type re-registers
-                    local _ek = label .. "|spec:" .. eventName
-                    if _hookCost[_ek] then _hookCost[_ek].specTable = specTable end  -- for lazy name resolve
-                    specTable[eventName] = wrapped
+                if _hookProbeArmed and _SPEC_EVENTS[eventName] then
+                    local label = _specLabel(specTable)
+                    if not HIBERNATE_SKIP[label] then
+                        _specWrapped[fn] = true
+                        local wrapped = _wrapHookTiming(label, "spec:" .. eventName, fn)
+                        _specWrapped[wrapped] = true   -- don't re-wrap if a later type re-registers
+                        local _ek = label .. "|spec:" .. eventName
+                        if _hookCost[_ek] then _hookCost[_ek].specTable = specTable end  -- for lazy name resolve
+                        specTable[eventName] = wrapped
+                    end
+                elseif _attribArmed and _SPEC_MARK[eventName] then
+                    -- ATTRIBUTION: a MOD spec's lifecycle callback is mod code executing —
+                    -- carry the marker so hooks it installs get named. Only when the spec's
+                    -- registered name carries a mod prefix that resolves to a real env
+                    -- (base-game specs install nothing of ours to attribute).
+                    local label = _specLabel(specTable)
+                    local owner = (type(label) == "string") and string.match(label, "^([^%.]+)%.") or nil
+                    if owner ~= nil and type(_G[owner]) == "table" then
+                        _specWrapped[fn] = true
+                        local wrapped = function(self, ...)
+                            local prev = _execMod
+                            _execMod = owner
+                            return _execRestore(prev, fn(self, ...))
+                        end
+                        _specWrapped[wrapped] = true
+                        specTable[eventName] = wrapped
+                    end
                 end
             end
         end
         return _orig_regEL(vehicleType, eventName, specTable)
     end
-    log("SPEC PROBE armed: timing specializations' onUpdate/onUpdateTick (→ mmHookCost).")
+    if _hookProbeArmed then
+        log("SPEC PROBE armed: timing specializations' onUpdate/onUpdateTick (\226\134\146 mmHookCost).")
+    end
+    if _attribArmed then
+        log("SPEC MARK active: mod specs' lifecycle callbacks carry the attribution marker.")
+    end
 end
 
 -- Resolve a spec module table → its registered name, via g_specializationManager (built
@@ -408,6 +436,19 @@ local function _buildSpecRevMap()
     -- specs resolve to names too, not just vehicle ones (the main source of leftover spec#N).
     local mgrs = { g_specializationManager, g_placeableSpecializationManager, g_handToolSpecializationManager }
     local scanned, mapped = 0, 0
+    -- MOD-ADDED specs: their class lives in the MOD'S ENV, not _G — `_G[className]`
+    -- misses them (the spec#41/#86/#106/#137 cases). Pre-collect every installed mod's
+    -- env table once so the className fallback below can check them all cheaply.
+    local modEnvs = {}
+    pcall(function()
+        if g_modManager ~= nil and type(g_modManager.mods) == "table" then
+            for _, m in ipairs(g_modManager.mods) do
+                local mn = m and m.modName
+                local env = (type(mn) == "string") and _G[mn] or nil
+                if type(env) == "table" then modEnvs[#modEnvs + 1] = env end
+            end
+        end
+    end)
     for _, mgr in ipairs(mgrs) do
         if type(mgr) == "table" then
             local lists = {}
@@ -421,7 +462,13 @@ local function _buildSpecRevMap()
                         if name ~= nil and _specRevMap[e] == nil then _specRevMap[e] = name; mapped = mapped + 1 end
                         name = (type(e.name) == "string" and e.name) or name
                         local objs = { e.object, e.specializationObject, e.specialization }
-                        if type(e.className) == "string" then objs[#objs + 1] = (rawget(_G, e.className) or _G[e.className]) end
+                        if type(e.className) == "string" then
+                            objs[#objs + 1] = (rawget(_G, e.className) or _G[e.className])
+                            for _, env in ipairs(modEnvs) do
+                                local cls = rawget(env, e.className)
+                                if type(cls) == "table" then objs[#objs + 1] = cls end
+                            end
+                        end
                         for _, o in ipairs(objs) do
                             if type(o) == "table" and name ~= nil and _specRevMap[o] == nil then
                                 _specRevMap[o] = name; mapped = mapped + 1
@@ -732,6 +779,12 @@ local LOAD_CRITICAL_PATTERNS = {
     "%.onFinalizePlacement$",
     "%.onConnectionFinishedLoading$",
     "%.sendInitialClientState$",
+    -- SAVE side (engine-source audit 2026-06-12): vetoing a mod's SAVE hook while its
+    -- LOAD hook still runs next boot = asymmetric persistence (the load reads data the
+    -- save never wrote) — the classic corruption path. Lock the whole save/stream
+    -- surface too; over-protecting costs an ignored veto, under-protecting costs saves.
+    "%.save$", "%.saveToXMLFile$", "%.registerSavegameXMLPaths$",
+    "%.onSaveComplete$", "%.readStream$", "%.writeStream$",
 }
 local _lcCache = {}
 local function isLoadCritical(target)

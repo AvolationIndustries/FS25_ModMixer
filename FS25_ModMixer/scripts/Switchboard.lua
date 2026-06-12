@@ -1928,6 +1928,44 @@ function SB.unrankMod(mod) return SB.unrankGlobal(mod) end
 function SB.setBasicWinner(target, mod) SB.basicWinners[target] = mod; SB.basicApply() end
 function SB.clearBasicWinner(target)    SB.basicWinners[target] = nil; SB.basicApply() end
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- SETTLED FIGHTS. A won fight VANISHES from the conflict list (the losers' hooks
+-- are vetoed-away at load → <2 named contestants → no conflict), which made the
+-- pick UNDO-able only from Advanced. Enumerate stored vetoes whose target no
+-- longer appears as a conflict → the Category "👑 reigning" cards; reopen clears
+-- the pick + every veto on that target (losers return at next restart).
+-- ─────────────────────────────────────────────────────────────────────────────
+function SB.listSettled(currentConflictTargets)
+    local losersByTarget = {}
+    for key in pairs(SB.vetoes) do
+        local m, t = string.match(key, "^(.-)|(.+)$")
+        if m ~= nil and t ~= nil and m ~= "(unknown)" then
+            losersByTarget[t] = losersByTarget[t] or {}
+            table.insert(losersByTarget[t], m)
+        end
+    end
+    local out = {}
+    for t, losers in pairs(losersByTarget) do
+        if currentConflictTargets == nil or not currentConflictTargets[t] then
+            table.sort(losers)
+            out[#out + 1] = { target = t, losers = losers, winner = SB.basicWinners[t] }
+        end
+    end
+    table.sort(out, function(a, b) return a.target < b.target end)
+    return out
+end
+
+function SB.reopenContest(target)
+    if target == nil then return end
+    SB.basicWinners[target] = nil
+    for key in pairs(SB.vetoes) do
+        local _, t = string.match(key, "^(.-)|(.+)$")
+        if t == target then SB.vetoes[key] = nil end
+    end
+    SB.save()
+    gamelog(string.format("reopened contest on %s — pick cleared, losers restore at restart", target))
+end
+
 -- Drop ALL tiered state (global + per-cat ranks + cards) and the vetoes they produced.
 function SB.clearBasic()
     SB.priorityGlobal = {}

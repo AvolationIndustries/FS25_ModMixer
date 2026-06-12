@@ -404,6 +404,10 @@ local function helpForRow(row)
     elseif rt == "basicShared" then
         return "SHARED \226\128\148 all these mods run together; the last one has the final say. Nothing is removed.\n"
             .. targetHelp(row.target)
+    elseif rt == "basicSettled" then
+        return "SETTLED \226\128\148 you picked a winner here and the losers' hooks are vetoed (not installed), "
+            .. "so this fight no longer appears in the open-conflict list. Space REOPENS it: clears the "
+            .. "pick and restores every muted mod at the next restart.\n" .. targetHelp(row.featureId)
     elseif rt == "basicIncompat" then
         return "INCOMPATIBLE \226\128\148 these mods fundamentally fight and ModMixer can't merge them. "
             .. "Keep only one installed."
@@ -1508,6 +1512,29 @@ function ModMixerSwitchboardFrame:collectCategoryRows()
         end
     end
 
+    -- SETTLED FIGHTS: a won fight vanishes from the conflict list (losers vetoed-away
+    -- at load), which silently made the pick undo-able only from Advanced — the
+    -- "disappearing card" read as a glitch, not a victory. Show a 👑 card per settled
+    -- target; Space reopens (clears the pick + restores every loser at next restart).
+    if SB.listSettled ~= nil then
+        local currentTargets = {}
+        for _, c in ipairs(conflicts) do
+            if c.target ~= nil then currentTargets[c.target] = true end
+        end
+        for _, s in ipairs(SB.listSettled(currentTargets)) do
+            local losers = {}
+            for _, m in ipairs(s.losers) do losers[#losers + 1] = prettyMod(m) end
+            local winnerTxt = (s.winner ~= nil) and prettyMod(s.winner) or "your pick"
+            data[#data + 1] = {
+                rowType = "basicSettled", category = areaCat(s.target), basicSort = 2,
+                modLabel = areaName(s.target),
+                featureLabel = "\240\159\145\145 " .. winnerTxt .. " reigning \226\128\148 muted: " .. table.concat(losers, ", "),
+                stateText = "settled \226\128\148 Space reopens",
+                featureId = s.target,
+            }
+        end
+    end
+
     for _, c in ipairs(incompat) do
         local names = {}
         for _, m in ipairs(c.mods) do names[#names + 1] = prettyMod(m) end
@@ -2182,6 +2209,12 @@ function ModMixerSwitchboardFrame:onActivate()
     end
     if row.rowType == "perfInfo" then return end
     if row.rowType == "basicFight" then self:cycleFightWinner(row); return end
+    if row.rowType == "basicSettled" then
+        if SB.reopenContest ~= nil then SB.reopenContest(row.featureId) end
+        self:refresh()
+        self:setMenuButtonInfoDirty()
+        return
+    end
     if row.rowType == "basicPriority" or row.rowType == "catPriority" then
         self:onMoveHook(-1); return   -- SPACE = promote
     end
