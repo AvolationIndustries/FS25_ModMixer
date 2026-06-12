@@ -881,6 +881,13 @@ end
 -- RE-ENABLED 2026-06-06: now also the per-wheel MoreRealistic physics diagnostic
 -- (friction L↔R, load, rolling resistance) for diagnosing modded-vehicle veer / brakes.
 local SHOW_VEHICLE_STATE = true
+
+-- ModMixer's own instrumentation wrappers (hook-probe timers, execution markers) ride
+-- some chains, and env-fingerprinting now names them honestly as ours — but instrumentation
+-- isn't a CONTESTANT, and the referee on the scoreboard read as a stomp ([ow!] on
+-- updateVehiclePhysics). Hidden from the contest views; flip to audit our own wrappers.
+local SHOW_SELF_HOOKS = false
+local SELF_MOD = g_currentModName or "FS25_0_ModMixer"   -- captured at load (correct env)
 local function controlledVehicle()
     if g_currentMission == nil then return nil end
     local v = g_currentMission.controlledVehicle
@@ -1097,7 +1104,11 @@ function ModMixerSwitchboardFrame:collectRows()
         local hookersByTarget = {}
         for modName, targets in pairs(reg) do
             for target, e in pairs(targets) do
-                if not (modName == "(unknown)" and redundant[target]) then
+                -- Self-filter FIRST (single chokepoint): excluding our instrumentation
+                -- here keeps nHook counts, 1/N positions, winner math and row creation
+                -- all consistent downstream (a 4-chain with us hidden reads 1/3..3/3).
+                if (SHOW_SELF_HOOKS or modName ~= SELF_MOD)
+                   and not (modName == "(unknown)" and redundant[target]) then
                     local list = hookersByTarget[target]
                     if list == nil then list = {}; hookersByTarget[target] = list end
                     list[#list + 1] = { mod = modName, seq = (e and e.seq) or 0, kind = (e and e.kind) or "append" }

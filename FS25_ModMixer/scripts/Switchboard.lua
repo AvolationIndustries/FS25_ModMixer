@@ -1615,9 +1615,12 @@ function SB.buildConflicts()
             and Utils.__ms_isLoadCritical or function(t) return noVeto[t] == true end
 
         -- invert: target -> list of { mod, kind, seq }
+        -- (skip ourselves too: instrumentation wrappers aren't contestants — same
+        -- self-filter as the Advanced view, so Category/Simple never count us)
+        local selfMod = g_currentModName or "FS25_0_ModMixer"
         local byTarget = {}
         for mod, targets in pairs(hooksByMod) do
-            if mod ~= "(unknown)" then
+            if mod ~= "(unknown)" and mod ~= selfMod then
                 for target, e in pairs(targets) do
                     byTarget[target] = byTarget[target] or {}
                     local lst = byTarget[target]
@@ -1800,8 +1803,10 @@ function SB.buildReviewItems()
     end
     -- LIVE: every HUD-class hook the interceptor named this session (self-updating, ghost-free).
     if type(Utils) == "table" and type(Utils.__ms_hooksByMod) == "table" then
+        local selfMod = g_currentModName or "FS25_0_ModMixer"
         for mod, targets in pairs(Utils.__ms_hooksByMod) do
-            if mod ~= "(unknown)" and mod ~= "(anonymous)" and type(targets) == "table" then
+            if mod ~= "(unknown)" and mod ~= "(anonymous)" and mod ~= selfMod
+               and type(targets) == "table" then
                 for target in pairs(targets) do addHud(target, mod) end
             end
         end
