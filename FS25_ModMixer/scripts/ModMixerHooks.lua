@@ -684,46 +684,31 @@ do
     local optOut = (dir ~= "" and type(fileExists) == "function" and fileExists(dir .. "MODMIXER_NO_DECLUTTER.txt")) and true or false
     if (not _mmSafeMode(dir)) and (not optOut)
        and type(TabbedMenu) == "table" and type(TabbedMenu.assignMenuButtonInfo) == "function" then
-        -- Exit-family action ids, built LAZILY: InputAction is often not populated at this
-        -- early load, so building it now can yield an EMPTY set (→ the exit-fold silently does
-        -- nothing, which is exactly the "ESC survived but a slot still freed" symptom). Build it
-        -- on first menu open instead, and cache only once it's non-empty.
-        local exitSet = nil
-        local function getExitSet()
-            if exitSet ~= nil then return exitSet end
-            local s, n = {}, 0
-            if type(InputAction) == "table" then
-                for _, nm in ipairs({ "MENU_BACK", "MENU_CANCEL" }) do
-                    if InputAction[nm] ~= nil then s[InputAction[nm]] = true; n = n + 1 end
-                end
-            end
-            if n > 0 then exitSet = s end   -- cache only when populated
-            return s
-        end
-        local _declutterLogged = 0
+        -- A footer button is an EXIT (back/cancel) by its action NAME. menuButtonInfo carries the
+        -- action as a string name (the diag showed ia=MENU_BACK), so compare by tostring — robust
+        -- whether the value is a string, an id, or an enum. (The earlier InputAction[name]-keyed
+        -- set never matched the string names, so the exit-fold was inert — also why Tag Place was
+        -- never actually at risk.)
+        local function isExit(ia) local s = tostring(ia); return s == "MENU_BACK" or s == "MENU_CANCEL" end
+        local _declutterLogged, _footerAudit = 0, 0
         local _origAssignMBI = TabbedMenu.assignMenuButtonInfo
         TabbedMenu.assignMenuButtonInfo = function(self, info, ...)
             local use = info
             if type(info) == "table" then
-                local es = getExitSet()
                 local ok, cleaned, dropped = pcall(function()
                     local out, seenExit, seenKey, drops = {}, false, {}, {}
                     for _, b in ipairs(info) do
                         local drop = false
                         if type(b) == "table" then
-                            local ia = b.inputAction
                             local bare = (b.text == nil or b.text == "")
-                            if ia ~= nil and es[ia] and bare then
-                                -- BLANK exit button (no label) = a redundant back/cancel HINT.
-                                -- A repurposed exit that carries a real label is NOT bare and is
-                                -- KEPT — e.g. the production frame puts "Tag place" on MENU_CANCEL,
-                                -- which draws the ESC glyph but is a real function, not a duplicate.
-                                -- Folding it would DELETE that function. So only genuinely-blank
-                                -- duplicate exits collapse here.
+                            if isExit(b.inputAction) and bare then
+                                -- BLANK exit (no label) = a redundant back/cancel hint. A repurposed
+                                -- exit that carries a real label (e.g. Tag Place on MENU_CANCEL) is
+                                -- KEPT — folding it would delete a function, not a duplicate.
                                 if seenExit then drop = true else seenExit = true end
                             else
                                 -- exact-duplicate fold: same action + text + callback = redundant
-                                local k = tostring(ia) .. "\0" .. tostring(b.text) .. "\0" .. tostring(b.callback)
+                                local k = tostring(b.inputAction) .. "\0" .. tostring(b.text) .. "\0" .. tostring(b.callback)
                                 if seenKey[k] then drop = true else seenKey[k] = true end
                             end
                         end
@@ -740,7 +725,35 @@ do
                     end
                 end
             end
-            return _origAssignMBI(self, use, ...)
+            local ret = _origAssignMBI(self, use, ...)
+            -- RENDERED-FOOTER AUDIT (one-shot, capped, production footer only): after the engine
+            -- lays buttons into the physical slots, dump each slot's visible state + action name +
+            -- rendered text. This is what's ACTUALLY on screen (truncation, every source) — the
+            -- decisive view for the multi-ESC mess, beyond the menuButtonInfo data dump.
+            if _footerAudit < 6 and type(self.menuButton) == "table" then
+                local isProd = false
+                for _, btn in ipairs(self.menuButton) do
+                    local n = btn.inputActionName
+                    if n == "ACTIVATE_OBJECT" or n == "MENU_EXTRA_1" then isProd = true; break end
+                end
+                if isProd then
+                    _footerAudit = _footerAudit + 1
+                    pcall(function()
+                        local parts = {}
+                        for i, btn in ipairs(self.menuButton) do
+                            local vis = btn.visible
+                            local txt
+                            if type(btn.getText) == "function" then
+                                local o, t = pcall(function() return btn:getText() end)
+                                if o then txt = t end
+                            end
+                            parts[#parts + 1] = string.format("%d[vis=%s ia=%s txt='%s']", i, tostring(vis), tostring(btn.inputActionName), tostring(txt))
+                        end
+                        log("FOOTER AUDIT (" .. tostring(#self.menuButton) .. " slots): " .. table.concat(parts, " "))
+                    end)
+                end
+            end
+            return ret
         end
         log("MENU DE-CLUTTER active: folds genuinely-redundant footer buttons (blank duplicate exits + exact dups); repurposed actions like Tag Place are kept. Opt out: MODMIXER_NO_DECLUTTER.txt")
     else
