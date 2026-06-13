@@ -664,6 +664,66 @@ local function _mmSafeMode(dir)
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- MENU DE-CLUTTER — fold redundant footer EXIT buttons to ONE.
+-- FS25 menu footers have a FIXED number of physical slots: TabbedMenu:assignMenuButtonInfo
+-- lays buttons out with `for i in ipairs(self.menuButton)` (gui/base/TabbedMenu.lua:329) and
+-- any menuButtonInfo entry past the last slot is silently DROPPED, never drawn. When several
+-- mods add buttons the surplus overflows and a real one vanishes (UpgradeYourFactory's UPGRADE
+-- pushed out by ProductionStorageControl's SPAWN GOODS). The biggest waste is duplicate EXIT
+-- buttons: two mods each register a MENU_BACK/MENU_CANCEL, so every menu shows "ESC ESC" — two
+-- slots for one job. We wrap the single chokepoint (assignMenuButtonInfo runs once per refresh,
+-- AFTER every mod's updateMenuButtons append) and keep only the FIRST exit-family button + drop
+-- exact duplicates, freeing the slots so the real buttons fit. The ESC KEY still closes the menu
+-- either way — MENU_BACK is a DEFAULT action handled by the menu, not by the footer hint; we only
+-- remove the redundant HINT. Only TabbedMenu footers are touched (dialogs are a different class,
+-- so their Cancel buttons are untouched). UI-only, pcall-guarded, skipped in safe mode.
+-- Opt out: MODMIXER_NO_DECLUTTER.txt in modSettings/FS25_ModMixer/.
+-- ─────────────────────────────────────────────────────────────────────────────
+do
+    local dir = (type(getUserProfileAppPath) == "function") and (getUserProfileAppPath() .. "modSettings/FS25_ModMixer/") or ""
+    local optOut = (dir ~= "" and type(fileExists) == "function" and fileExists(dir .. "MODMIXER_NO_DECLUTTER.txt")) and true or false
+    if (not _mmSafeMode(dir)) and (not optOut)
+       and type(TabbedMenu) == "table" and type(TabbedMenu.assignMenuButtonInfo) == "function" then
+        -- Exit-family action ids (compared by value; mods set inputAction = InputAction.MENU_BACK).
+        local exitSet = {}
+        if type(InputAction) == "table" then
+            for _, n in ipairs({ "MENU_BACK", "MENU_CANCEL" }) do
+                if InputAction[n] ~= nil then exitSet[InputAction[n]] = true end
+            end
+        end
+        local _origAssignMBI = TabbedMenu.assignMenuButtonInfo
+        TabbedMenu.assignMenuButtonInfo = function(self, info, ...)
+            local use = info
+            if type(info) == "table" then
+                local ok, cleaned = pcall(function()
+                    local out, seenExit, seenKey = {}, false, {}
+                    for _, b in ipairs(info) do
+                        local drop = false
+                        if type(b) == "table" then
+                            local ia = b.inputAction
+                            if ia ~= nil and exitSet[ia] then
+                                if seenExit then drop = true else seenExit = true end
+                            else
+                                -- exact-duplicate fold: same action + text + callback = redundant
+                                local k = tostring(ia) .. "\0" .. tostring(b.text) .. "\0" .. tostring(b.callback)
+                                if seenKey[k] then drop = true else seenKey[k] = true end
+                            end
+                        end
+                        if not drop then out[#out + 1] = b end
+                    end
+                    return out
+                end)
+                if ok and type(cleaned) == "table" then use = cleaned end
+            end
+            return _origAssignMBI(self, use, ...)
+        end
+        log("MENU DE-CLUTTER active: redundant footer exit buttons folded to one (frees slots for real buttons). Opt out: MODMIXER_NO_DECLUTTER.txt")
+    else
+        log("MENU DE-CLUTTER not installed (safe mode, opt-out file, or TabbedMenu unavailable at load).")
+    end
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
 -- SAVE WATCHDOG (boot state) — load-time half. We persist a single PHASE across boots
 -- in boot_state.xml: "pending" (a lever boot started but never confirmed healthy),
 -- "ok" (confirmed healthy), or "recovered" (we auto-disabled levers after a pending).
