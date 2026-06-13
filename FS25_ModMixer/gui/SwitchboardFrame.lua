@@ -97,27 +97,25 @@ function RowSource:populateCellForItemInSection(list, section, index, cell)
     if sliderEl ~= nil then pcall(function() sliderEl:setVisible(isValue) end) end
 
     if isValue and sliderEl ~= nil then
-        -- Amber arrow circles: the stock green left/right arrows take the focus/selected
-        -- highlight colour (green), so on a SELECTED slider row they blend into the green
-        -- row fill and vanish. Recolour the auto-added "left"/"right" arrow buttons amber
-        -- across every overlay state (normal + focused/selected/highlighted/pressed) so they
-        -- stay distinct on both dark and selected rows. setImageColor writes into each state's
-        -- colour table (or the normal fallback when a state colour is unset), so this covers
-        -- all cases. pcall'd; cells recycle, so it re-applies cheaply per populate.
-        if sliderEl.getDescendantByName ~= nil then
-            for _, an in ipairs({ "left", "right" }) do
-                local arrow = sliderEl:getDescendantByName(an)
-                if arrow ~= nil and arrow.setImageColor ~= nil then
-                    pcall(function() arrow:setImageColor(nil, 0.95, 0.66, 0.18, 1) end)
-                    if type(GuiOverlay) == "table" then
-                        for _, sk in ipairs({ "STATE_FOCUSED", "STATE_SELECTED", "STATE_HIGHLIGHTED", "STATE_PRESSED" }) do
-                            local st = GuiOverlay[sk]
-                            if st ~= nil then pcall(function() arrow:setImageColor(st, 0.95, 0.66, 0.18, 1) end) end
-                        end
-                    end
-                end
+        -- Amber arrow circles. The slider's left/right arrows are ButtonElements (extends
+        -- TextElement, NOT BitmapElement → no setImageColor — that's why the first attempt
+        -- no-op'd). Each arrow's circle IS the button's own GuiOverlay (btn.overlay): grey at
+        -- rest, and recoloured to the focus/selected/highlighted state colour on the active
+        -- row — which is green, so it disappeared into the green selected-row fill. Repaint the
+        -- overlay's colour tables directly: base (.color) + any per-state colours that exist
+        -- (.colorFocused/.colorSelected/.colorHighlighted/.colorPressed — a nil state falls back
+        -- to .color, so amber wins everywhere). The engine exposes the arrows as
+        -- leftButtonElement/rightButtonElement. pcall'd; cells recycle so it re-applies cheaply.
+        local function paintArrowAmber(btn)
+            if btn == nil or type(btn.overlay) ~= "table" then return end
+            local ov = btn.overlay
+            ov.color = { 0.95, 0.66, 0.18, 1 }
+            for _, k in ipairs({ "colorFocused", "colorSelected", "colorHighlighted", "colorPressed" }) do
+                if ov[k] ~= nil then ov[k] = { 0.95, 0.66, 0.18, 1 } end
             end
         end
+        pcall(function() paintArrowAmber(sliderEl.leftButtonElement) end)
+        pcall(function() paintArrowAmber(sliderEl.rightButtonElement) end)
         local tv = valueTextsFor(row)
         if tv ~= nil then
             pcall(function() sliderEl:setTexts(tv.texts) end)
