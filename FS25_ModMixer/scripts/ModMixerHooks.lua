@@ -1169,6 +1169,20 @@ local function patched(orig, existingFn, newFn, kind)
     -- existingFn may be a trampoline we already installed for a reordered target
     -- (a later mod re-hooking the same slot) — resolve the target from it.
     local target = Utils.__ms_trampTargets[existingFn] or Utils.__ms_fnNames[existingFn]
+
+    -- ── RE-ENTRY GUARD ────────────────────────────────────────────────────────
+    -- If newFn is one of OUR OWN trampolines, a caller is re-installing our reorder
+    -- entry point on top of itself — that is machinery, not a mod's hook. Buffering it
+    -- feeds the reorder chain into itself. THIS WAS THE 2026-06-13 BRICK: a reorder rule
+    -- on Drivable.updateVehiclePhysics + AdvancedDamageSystem's per-vehicle-type
+    -- re-registration accreted 189 entries (93 trampoline self-feeds + 94 ADS dupes) into
+    -- one fold; the resulting re-entrant mega-chain mangled `self`, so AIAutomaticSteering's
+    -- updateVehiclePhysics overwrite read self.spec_aiAutomaticSteering == nil every frame
+    -- → no controls, camera under the map. Leave the chain exactly as it is.
+    if Utils.__ms_trampTargets[newFn] ~= nil then
+        return existingFn
+    end
+
     -- Attribution for named targets: g_currentModName (top-level) → install-time
     -- scan-elimination (deferred). debug is unavailable in-game, so these are the only
     -- signals. An inferred name is RECORDED as the real mod, so veto/winner/reorder
@@ -1221,10 +1235,38 @@ local function patched(orig, existingFn, newFn, kind)
             buf = { base = existingFn, hooks = {} }   -- first hooker: existingFn is pristine
             Utils.__ms_reorderBuf[target] = buf
         end
-        buf.hooks[#buf.hooks + 1] = { mod = mod or "(unknown)", impl = newFn, kind = kind }
-        noteHook(mod, target, kind, nil, true, inferred)
-        log(string.format("REORDER: buffered %s -> %s (%s).", tostring(mod), target, kind))
-        return getTrampoline(target)
+        -- DEDUP: a mod that re-registers the SAME impl per vehicle type (ADS does this
+        -- ~475x: registerOverwrittenFunction reads the inherited fn and re-wraps for every
+        -- type, but the impl reference is identical each time) must occupy ONE slot in the
+        -- fold, not one per type — otherwise the folded chain explodes (see RE-ENTRY GUARD).
+        -- Already buffered this exact impl → no-op, just hand back the stable trampoline.
+        local already = false
+        for _, h in ipairs(buf.hooks) do
+            if h.impl == newFn then already = true; break end
+        end
+        if not already then
+            -- BACKSTOP: even with dedup + re-entry guard, refuse to fold a pathological
+            -- number of DISTINCT impls (a mod minting a fresh closure per type). Past the
+            -- cap, fall back to natural install for the surplus (don't buffer) and warn —
+            -- never let one target's fold grow without bound again.
+            if #buf.hooks >= 24 then
+                if not buf._capWarned then
+                    buf._capWarned = true
+                    log(string.format("REORDER CAP: %s already has %d distinct buffered hooks — "
+                        .. "not reordering further hooks on it (installing them naturally). "
+                        .. "A mod is registering many distinct impls on this target.",
+                        target, #buf.hooks))
+                end
+            else
+                buf.hooks[#buf.hooks + 1] = { mod = mod or "(unknown)", impl = newFn, kind = kind }
+                noteHook(mod, target, kind, nil, true, inferred)
+                log(string.format("REORDER: buffered %s -> %s (%s).", tostring(mod), target, kind))
+                return getTrampoline(target)
+            end
+            -- capped: fall through to a normal install (below) so the hook still runs
+        else
+            return getTrampoline(target)
+        end
     end
 
     -- Hook-cost probe: when armed, install the mod's impl wrapped in a (boolean-gated)
