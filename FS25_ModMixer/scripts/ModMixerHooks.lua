@@ -700,33 +700,26 @@ do
             if n > 0 then exitSet = s end   -- cache only when populated
             return s
         end
-        local _declutterDiag = 0
+        local _declutterLogged = 0
         local _origAssignMBI = TabbedMenu.assignMenuButtonInfo
         TabbedMenu.assignMenuButtonInfo = function(self, info, ...)
             local use = info
             if type(info) == "table" then
-                -- One-shot diagnostic (capped): dump a busy footer's composition so we can see
-                -- each entry's raw inputAction + text — decisive for what the ESC buttons are.
-                if _declutterDiag < 3 and #info > 4 then
-                    _declutterDiag = _declutterDiag + 1
-                    pcall(function()
-                        local parts = {}
-                        for i, b in ipairs(info) do
-                            if type(b) == "table" then
-                                parts[#parts + 1] = string.format("%d[ia=%s txt=%s]", i, tostring(b.inputAction), tostring(b.text))
-                            end
-                        end
-                        log("DECLUTTER DIAG (" .. tostring(#info) .. " entries): " .. table.concat(parts, " "))
-                    end)
-                end
                 local es = getExitSet()
-                local ok, cleaned = pcall(function()
-                    local out, seenExit, seenKey = {}, false, {}
+                local ok, cleaned, dropped = pcall(function()
+                    local out, seenExit, seenKey, drops = {}, false, {}, {}
                     for _, b in ipairs(info) do
                         local drop = false
                         if type(b) == "table" then
                             local ia = b.inputAction
-                            if ia ~= nil and es[ia] then
+                            local bare = (b.text == nil or b.text == "")
+                            if ia ~= nil and es[ia] and bare then
+                                -- BLANK exit button (no label) = a redundant back/cancel HINT.
+                                -- A repurposed exit that carries a real label is NOT bare and is
+                                -- KEPT — e.g. the production frame puts "Tag place" on MENU_CANCEL,
+                                -- which draws the ESC glyph but is a real function, not a duplicate.
+                                -- Folding it would DELETE that function. So only genuinely-blank
+                                -- duplicate exits collapse here.
                                 if seenExit then drop = true else seenExit = true end
                             else
                                 -- exact-duplicate fold: same action + text + callback = redundant
@@ -734,15 +727,22 @@ do
                                 if seenKey[k] then drop = true else seenKey[k] = true end
                             end
                         end
-                        if not drop then out[#out + 1] = b end
+                        if drop then drops[#drops + 1] = (type(b) == "table" and (b.text or "(back)")) or "?"
+                        else out[#out + 1] = b end
                     end
-                    return out
+                    return out, drops
                 end)
-                if ok and type(cleaned) == "table" then use = cleaned end
+                if ok and type(cleaned) == "table" then
+                    use = cleaned
+                    if type(dropped) == "table" and #dropped > 0 and _declutterLogged < 3 then
+                        _declutterLogged = _declutterLogged + 1
+                        pcall(function() log("DECLUTTER: folded " .. #dropped .. " redundant footer button(s): " .. table.concat(dropped, ", ")) end)
+                    end
+                end
             end
             return _origAssignMBI(self, use, ...)
         end
-        log("MENU DE-CLUTTER active: redundant footer exit buttons folded to one (frees slots for real buttons). Opt out: MODMIXER_NO_DECLUTTER.txt")
+        log("MENU DE-CLUTTER active: folds genuinely-redundant footer buttons (blank duplicate exits + exact dups); repurposed actions like Tag Place are kept. Opt out: MODMIXER_NO_DECLUTTER.txt")
     else
         log("MENU DE-CLUTTER not installed (safe mode, opt-out file, or TabbedMenu unavailable at load).")
     end
